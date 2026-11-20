@@ -1,0 +1,51 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
+dev-keys/
+dev-certs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local Mac desktop build output (install only /Applications/Sentinel.app)
+build/
+
+# Rust
+target/
+
+# Package artifacts (downloaded installers are never committed)
+artifacts/
+*.pkg
+*.dmg
+*.msi
+*.deb
+*.rpm
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,114 @@
+name: sentineldesk
+
+x-backend-runtime: &backend-runtime
+  build: ./backend
+  env_file: .env
+  environment:
+    # Runtime uses the least-privilege role; owner credentials are not given to the backend.
+    DATABASE_URL: postgresql+asyncpg://sentinel_app:${APP_DB_PASSWORD:?run scripts/dev-init.sh}@postgres:5432/${POSTGRES_DB}
+    MIGRATION_DATABASE_URL: ""
+    POSTGRES_PASSWORD: ""
+    APP_DB_PASSWORD: ""
+    JOB_SIGNING_PRIVATE_KEY_PATH: /run/secrets/job_signing_private_key
+    JOB_SIGNING_PUBLIC_KEY_PATH: /run/secrets/job_signing_public_key
+    # Shared Mac package store (host agent + container ingest). Create with install script.
+    PACKAGE_STORE_DIR: /data/packages
+  read_only: true
+  tmpfs:
+    - /tmp
+  volumes:
+    - /Users/Shared/SentinelDesk/packages:/data/packages
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?run scripts/dev-init.sh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/dev-init.sh}
+      POSTGRES_DB: ${POSTGRES_DB:?run scripts/dev-init.sh}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sentinel_app:${APP_DB_PASSWORD:?run scripts/dev-init.sh}@postgres:5432/${POSTGRES_DB}
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      JOB_SIGNING_PRIVATE_KEY_PATH: ""
+      JOB_SIGNING_PUBLIC_KEY_PATH: ""
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Browser traffic (via the Vite proxy) on plain loopback HTTP.
+  backend:
+    <<: *backend-runtime
+    secrets:
+      - job_signing_private_key
+      - job_signing_public_key
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Same application over TLS for endpoint agents (spec §9.9). Uses the dev CA from
+  # `make dev-certs`; agents pin that CA.
+  agent-gateway:
+    <<: *backend-runtime
+    command:
+      - uvicorn
+      - app.main:create_app
+      - --factory
+      - --host=0.0.0.0
+      - --port=8443
+      - --ssl-certfile=/run/secrets/tls_server_cert
+      - --ssl-keyfile=/run/secrets/tls_server_key
+      - --no-proxy-headers
+      - --no-server-header
+    secrets:
+      - job_signing_private_key
+      - job_signing_public_key
+      - tls_server_cert
+      - tls_server_key
+      - tls_ca_cert
+    ports:
+      - "127.0.0.1:8443:8443"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request,sys; c=ssl.create_default_context(cafile='/run/secrets/tls_ca_cert'); sys.exit(0 if urllib.request.urlopen('https://localhost:8443/health/ready', timeout=3, context=c).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+secrets:
+  job_signing_private_key:
+    file: ./dev-keys/job_signing_private.pem
+  job_signing_public_key:
+    file: ./dev-keys/job_signing_public.pem
+  tls_server_cert:
+    file: ./dev-certs/server.pem
+  tls_server_key:
+    file: ./dev-certs/server-key.pem
+  tls_ca_cert:
+    file: ./dev-certs/ca.pem
+
+volumes:
+  pgdata:

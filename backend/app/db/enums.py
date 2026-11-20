@@ -1,0 +1,187 @@
+"""Closed value sets persisted in the database (enforced by CHECK constraints)."""
+
+from enum import StrEnum
+
+
+class IdentityProvider(StrEnum):
+    LOCAL = "local"
+    ENTRA = "entra"
+
+
+class RoleName(StrEnum):
+    EMPLOYEE = "EMPLOYEE"
+    APPROVER = "APPROVER"
+    SOFTWARE_ADMIN = "SOFTWARE_ADMIN"
+    SECURITY_ADMIN = "SECURITY_ADMIN"
+    AUDITOR = "AUDITOR"
+    PLATFORM_ADMIN = "PLATFORM_ADMIN"
+
+
+class OsFamily(StrEnum):
+    MACOS = "macos"
+    WINDOWS = "windows"
+    LINUX = "linux"
+
+
+class Architecture(StrEnum):
+    X86_64 = "x86_64"
+    ARM64 = "arm64"
+    UNIVERSAL = "universal"
+
+
+class DeviceStatus(StrEnum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    QUARANTINED = "QUARANTINED"
+    REVOKED = "REVOKED"
+    DECOMMISSIONED = "DECOMMISSIONED"
+
+
+class LifecycleStatus(StrEnum):
+    PENDING_REVIEW = "PENDING_REVIEW"
+    ACTIVE = "ACTIVE"
+    DEPRECATED = "DEPRECATED"
+    RETIRED = "RETIRED"
+
+
+class RiskLevel(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class InstallerType(StrEnum):
+    MACOS_PKG = "MACOS_PKG"
+    WINGET = "WINGET"
+    MSI = "MSI"
+    APT = "APT"
+    DNF = "DNF"
+
+
+class SourceType(StrEnum):
+    INTERNAL_ARTIFACT_STORE = "INTERNAL_ARTIFACT_STORE"
+    WINGET_SOURCE = "WINGET_SOURCE"
+    APT_REPOSITORY = "APT_REPOSITORY"
+    DNF_REPOSITORY = "DNF_REPOSITORY"
+
+
+class VerificationMethod(StrEnum):
+    MACOS_PKG_RECEIPT = "MACOS_PKG_RECEIPT"
+    MACOS_APP_BUNDLE = "MACOS_APP_BUNDLE"
+    WINGET_LIST = "WINGET_LIST"
+    DPKG_QUERY = "DPKG_QUERY"
+    RPM_QUERY = "RPM_QUERY"
+
+
+class PolicyDecision(StrEnum):
+    ALLOW = "ALLOW"
+    REQUIRE_APPROVAL = "REQUIRE_APPROVAL"
+    BLOCK = "BLOCK"
+
+
+class BanMatchType(StrEnum):
+    CATALOGUE_ID = "CATALOGUE_ID"
+    PUBLISHER = "PUBLISHER"
+    PACKAGE_ID = "PACKAGE_ID"
+    HASH = "HASH"
+    SIGNING_ID = "SIGNING_ID"
+
+
+class Severity(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class RequestStatus(StrEnum):
+    RECEIVED = "RECEIVED"
+    UNDERSTANDING = "UNDERSTANDING"
+    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
+    POLICY_CHECK = "POLICY_CHECK"
+    BLOCKED = "BLOCKED"
+    INCOMPATIBLE = "INCOMPATIBLE"
+    NOT_FOUND = "NOT_FOUND"
+    ALREADY_INSTALLED = "ALREADY_INSTALLED"
+    SECURITY_REVIEW = "SECURITY_REVIEW"
+    SECURITY_CHECK_UNAVAILABLE = "SECURITY_CHECK_UNAVAILABLE"
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"
+    AUTO_APPROVED = "AUTO_APPROVED"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+    READY_TO_INSTALL = "READY_TO_INSTALL"
+    QUEUED = "QUEUED"
+    DISPATCHED = "DISPATCHED"
+    RUNNING = "RUNNING"
+    VERIFYING = "VERIFYING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCEL_REQUESTED = "CANCEL_REQUESTED"
+    CANCELLED = "CANCELLED"
+    DEVICE_OFFLINE = "DEVICE_OFFLINE"
+    REQUIRES_ADMIN_REMEDIATION = "REQUIRES_ADMIN_REMEDIATION"
+
+
+class ApprovalDecision(StrEnum):
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class ApprovalChannel(StrEnum):
+    WEB = "WEB"
+    OUTLOOK_LINK = "OUTLOOK_LINK"
+    POLICY_AUTO = "POLICY_AUTO"
+
+
+class JobStatus(StrEnum):
+    QUEUED = "QUEUED"
+    DISPATCHED = "DISPATCHED"
+    RUNNING = "RUNNING"
+    VERIFYING = "VERIFYING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    FAILED_VERIFICATION = "FAILED_VERIFICATION"
+    EXPIRED = "EXPIRED"
+    CANCELLED = "CANCELLED"
+    REJECTED_BY_ENDPOINT = "REJECTED_BY_ENDPOINT"
+
+
+class VerificationStatus(StrEnum):
+    VERIFIED = "VERIFIED"
+    FAILED = "FAILED"
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+
+
+class ThreatVerdict(StrEnum):
+    CLEAN = "CLEAN"
+    MALICIOUS = "MALICIOUS"
+    SUSPICIOUS = "SUSPICIOUS"
+    INDETERMINATE = "INDETERMINATE"
+
+
+class NotificationChannel(StrEnum):
+    OUTLOOK = "OUTLOOK"
+    WEB = "WEB"
+
+
+class NotificationStatus(StrEnum):
+    PENDING = "PENDING"
+    SENT = "SENT"
+    FAILED = "FAILED"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    CANCELLED = "CANCELLED"
+
+
+class ActorType(StrEnum):
+    USER = "USER"
+    DEVICE = "DEVICE"
+    SYSTEM = "SYSTEM"
+    ANONYMOUS = "ANONYMOUS"
+
+
+class AuditResult(StrEnum):
+    SUCCESS = "SUCCESS"
+    DENIED = "DENIED"
+    FAILURE = "FAILURE"
