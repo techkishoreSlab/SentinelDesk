@@ -147,6 +147,12 @@ class InstallationJob(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     result_code: Mapped[str | None] = mapped_column(String(60))
     result_summary: Mapped[str | None] = mapped_column(String(500))
+    # Agent-reported mid-job progress (download bytes / install phase). Nullable for
+    # legacy agents and terminal jobs that never posted progress.
+    progress_phase: Mapped[str | None] = mapped_column(String(16))
+    progress_bytes_done: Mapped[int | None] = mapped_column(BigInteger)
+    progress_bytes_total: Mapped[int | None] = mapped_column(BigInteger)
+    progress_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class InstallationResult(Base):

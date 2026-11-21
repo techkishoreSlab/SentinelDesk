@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 final class PopoverContentView: NSView {
   var onOpenConsole: (() -> Void)?
@@ -7,12 +8,13 @@ final class PopoverContentView: NSView {
   var onQuit: (() -> Void)?
 
   private let brand = NSTextField(labelWithString: "SentinelDesk")
-  private let headline = NSTextField(labelWithString: "Offline")
-  private let detail = NSTextField(labelWithString: "Agent is not running")
+  private let headline = NSTextField(labelWithString: "Connecting…")
+  private let detail = NSTextField(labelWithString: "Starting Sentinel…")
   private let device = NSTextField(labelWithString: "Device —")
-  private let agentLine = NSTextField(labelWithString: "Agent process: stopped")
+  private let agentLine = NSTextField(labelWithString: "Agent process: —")
   private let stackLine = NSTextField(labelWithString: "Control plane: —")
   private let statusDot = NSView(frame: .zero)
+  private var lastState: PresenceState?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -24,18 +26,68 @@ final class PopoverContentView: NSView {
   @available(*, unavailable)
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-  func apply(status: AgentStatusSnapshot, agentRunning: Bool, stackMessage: String) {
-    headline.stringValue = status.headline
-    detail.stringValue = status.detail
-    if let id = status.deviceId, !id.isEmpty {
+  func apply(presence: PresenceViewModel) {
+    let stateChanged = lastState != presence.state
+    lastState = presence.state
+
+    if stateChanged {
+      NSAnimationContext.runAnimationGroup { ctx in
+        ctx.duration = 0.18
+        ctx.allowsImplicitAnimation = true
+        headline.animator().alphaValue = 0.35
+        detail.animator().alphaValue = 0.35
+      } completionHandler: { [weak self] in
+        guard let self else { return }
+        self.headline.stringValue = presence.headline
+        self.detail.stringValue = presence.detail
+        NSAnimationContext.runAnimationGroup { ctx in
+          ctx.duration = 0.18
+          self.headline.animator().alphaValue = 1
+          self.detail.animator().alphaValue = 1
+        }
+      }
+    } else {
+      headline.stringValue = presence.headline
+      detail.stringValue = presence.detail
+      headline.alphaValue = 1
+      detail.alphaValue = 1
+    }
+
+    if let id = presence.deviceId, !id.isEmpty {
       let short = id.count > 12 ? String(id.prefix(8)) + "…" : id
       device.stringValue = "Device \(short)"
     } else {
       device.stringValue = "Device not linked yet"
     }
-    agentLine.stringValue = agentRunning ? "Agent process: running" : "Agent process: stopped"
-    stackLine.stringValue = "Control plane: \(stackMessage)"
-    statusDot.layer?.backgroundColor = Theme.statusColor(status.state).cgColor
+    agentLine.stringValue = presence.agentRunning ? "Agent process: running" : "Agent process: stopped"
+    stackLine.stringValue = "Control plane: \(presence.stackMessage)"
+    statusDot.layer?.backgroundColor = Theme.statusColor(presence.state).cgColor
+    setDotPulsing(presence.animating)
+  }
+
+  /// Legacy bridge if anything still calls the old API.
+  func apply(status: AgentStatusSnapshot, agentRunning: Bool, stackMessage: String) {
+    let vm = PresenceController.shared.evaluate(
+      status: status,
+      agentRunning: agentRunning,
+      stackMessage: stackMessage
+    )
+    apply(presence: vm)
+  }
+
+  private func setDotPulsing(_ animating: Bool) {
+    statusDot.wantsLayer = true
+    statusDot.layer?.removeAnimation(forKey: "sentinel.dotPulse")
+    statusDot.layer?.opacity = 1
+    guard animating else { return }
+    let pulse = CABasicAnimation(keyPath: "opacity")
+    pulse.fromValue = 1.0
+    pulse.toValue = 0.28
+    pulse.duration = 0.75
+    pulse.autoreverses = true
+    pulse.repeatCount = .infinity
+    pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+    statusDot.layer?.add(pulse, forKey: "sentinel.dotPulse")
   }
 
   private func build() {
@@ -67,8 +119,9 @@ final class PopoverContentView: NSView {
 
     detail.font = .systemFont(ofSize: 12)
     detail.textColor = Theme.muted
-    detail.maximumNumberOfLines = 3
+    detail.maximumNumberOfLines = 4
     detail.lineBreakMode = .byWordWrapping
+    detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
     device.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
     device.textColor = Theme.muted
@@ -87,7 +140,7 @@ final class PopoverContentView: NSView {
     let restartBtn = makeButton("Restart agent", accent: false) { [weak self] in self?.onRestartAgent?() }
     let quitBtn = makeButton("Quit Sentinel", accent: false, destructive: true) { [weak self] in self?.onQuit?() }
 
-    let hint = NSTextField(labelWithString: "SaaS default: agent only. Demo mode can also start/stop Docker on this Mac.")
+    let hint = NSTextField(labelWithString: "SaaS: agent only. Demo mode can start/stop Docker on this Mac.")
     hint.font = .systemFont(ofSize: 11)
     hint.textColor = Theme.muted
     hint.maximumNumberOfLines = 2
@@ -105,7 +158,7 @@ final class PopoverContentView: NSView {
       stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
       stack.topAnchor.constraint(equalTo: topAnchor, constant: 16),
       stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
-      widthAnchor.constraint(equalToConstant: 320),
+      widthAnchor.constraint(equalToConstant: 328),
     ])
   }
 

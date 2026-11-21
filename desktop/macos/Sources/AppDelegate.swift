@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private var statusItem: NSStatusItem!
@@ -9,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var timer: Timer?
   private var config = ConfigStore.load()
   private var eventMonitor: Any?
+  private var menuBarAnimating = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     SingleInstance.claimOrExit()
@@ -16,28 +18,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     try? ConfigStore.ensureSupportDir()
     bootstrapStatusItem()
     bootstrapPopover()
+
+    PresenceController.shared.beginLaunch(
+      manageLocalStack: config.manageLocalStack,
+      startAgent: config.startAgentOnLaunch
+    )
     refreshUI()
 
     // Production SaaS: manageLocalStack=false → agent only (cloud backend stays up).
     // Local demo: manageLocalStack=true → Docker (+ optional Vite), then agent; Quit can stop stack.
     if config.manageLocalStack {
-      DemoStackSupervisor.shared.startIfEnabled(config: config) { [weak self] _, _ in
+      PresenceController.shared.noteStackStarting()
+      refreshUI()
+      DemoStackSupervisor.shared.startIfEnabled(config: config) { [weak self] ok, message in
         guard let self else { return }
+        if ok {
+          PresenceController.shared.noteStackSucceeded(message: message)
+        } else {
+          PresenceController.shared.noteStackFailed(message)
+        }
         if self.config.startAgentOnLaunch {
-          try? AgentSupervisor.shared.start(config: self.config)
+          self.startAgentOrReport()
         }
         self.refreshUI()
       }
     } else {
       if config.startAgentOnLaunch {
-        try? AgentSupervisor.shared.start(config: config)
+        startAgentOrReport()
       }
       if config.openConsoleOnLaunch, let url = URL(string: config.webConsoleURL) {
         NSWorkspace.shared.open(url)
       }
+      refreshUI()
     }
 
-    timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+    timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
       self?.refreshUI()
     }
     RunLoop.main.add(timer!, forMode: .common)
@@ -75,10 +90,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     statusMenu.addItem(quit)
 
     if let button = statusItem.button {
+      button.wantsLayer = true
       button.image = Self.menuBarIcon()
       button.imagePosition = .imageLeading
-      button.title = " Offline"
-      button.toolTip = "SentinelDesk — click for status, right‑click to quit"
+      button.title = " Connecting…"
+      button.toolTip = "SentinelDesk — connecting"
       button.target = self
       button.action = #selector(statusItemClicked(_:))
       button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -93,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     content.onQuit = { [weak self] in self?.quitApp() }
 
     popover = NSPopover()
-    popover.contentSize = NSSize(width: 320, height: 410)
+    popover.contentSize = NSSize(width: 328, height: 420)
     popover.behavior = .transient
     popover.animates = true
     let hosting = NSViewController()
@@ -142,23 +158,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func refreshUI() {
     let status = StatusReader.read()
     let running = AgentSupervisor.shared.isRunning
-    statusItem.button?.image = Self.menuBarIcon()
-    statusItem.button?.title = " " + Self.shortTitle(for: status)
-    statusItem.button?.toolTip = status.detail + " — right‑click for Quit"
-    content.apply(
+    let stackMessage = DemoStackSupervisor.shared.lastMessage
+    let vm = PresenceController.shared.evaluate(
       status: status,
       agentRunning: running,
-      stackMessage: DemoStackSupervisor.shared.lastMessage
+      stackMessage: stackMessage
     )
+
+    statusItem.button?.image = Self.menuBarIcon()
+    statusItem.button?.title = " " + vm.shortTitle
+    statusItem.button?.toolTip = "\(vm.detail) — right‑click for Quit"
+    setMenuBarAnimating(vm.animating)
+    content.apply(presence: vm)
   }
 
-  private static func shortTitle(for status: AgentStatusSnapshot) -> String {
-    switch status.state {
-    case .installing: return "Installing…"
-    case .degraded: return "Issue"
-    case .error, .stopped, .offline: return "Off"
-    case .online: return "Online"
+  private func setMenuBarAnimating(_ animating: Bool) {
+    guard menuBarAnimating != animating else { return }
+    menuBarAnimating = animating
+    guard let button = statusItem.button else { return }
+    button.wantsLayer = true
+    button.layer?.removeAnimation(forKey: "sentinel.pulse")
+    guard animating else {
+      button.layer?.opacity = 1
+      return
     }
+    let pulse = CABasicAnimation(keyPath: "opacity")
+    pulse.fromValue = 1.0
+    pulse.toValue = 0.42
+    pulse.duration = 0.85
+    pulse.autoreverses = true
+    pulse.repeatCount = .infinity
+    pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+    button.layer?.add(pulse, forKey: "sentinel.pulse")
   }
 
   private static func menuBarIcon() -> NSImage {
@@ -186,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       prefs?.onSaved = { [weak self] newConfig in
         self?.config = newConfig
         if newConfig.startAgentOnLaunch {
+          PresenceController.shared.noteAgentRestart()
           try? AgentSupervisor.shared.restart(config: newConfig)
         }
         self?.refreshUI()
@@ -197,16 +229,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     popover.performClose(nil)
   }
 
+  private func startAgentOrReport() {
+    // Reap/sleep must not run on the main thread or the menu bar stays wedged and
+    // the launch completion path never finishes.
+    let cfg = config
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        DemoStackSupervisor.shared.appendLaunchNote("Agent supervisor starting")
+        try AgentSupervisor.shared.start(config: cfg)
+        DemoStackSupervisor.shared.appendLaunchNote("Agent supervisor started")
+        DispatchQueue.main.async { self.refreshUI() }
+      } catch {
+        DemoStackSupervisor.shared.appendLaunchNote(
+          "Agent supervisor failed: \(error.localizedDescription)"
+        )
+        DispatchQueue.main.async {
+          PresenceController.shared.noteHardFailure(
+            "Couldn’t start the agent — \(error.localizedDescription)"
+          )
+          self.refreshUI()
+        }
+      }
+    }
+  }
+
   private func restartAgent() {
-    do {
-      try AgentSupervisor.shared.restart(config: config)
-      refreshUI()
-    } catch {
-      let alert = NSAlert()
-      alert.messageText = "Could not start agent"
-      alert.informativeText = error.localizedDescription
-      alert.alertStyle = .warning
-      alert.runModal()
+    PresenceController.shared.clearHardFailure()
+    PresenceController.shared.noteAgentRestart()
+    let cfg = config
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        try AgentSupervisor.shared.restart(config: cfg)
+        DispatchQueue.main.async { self.refreshUI() }
+      } catch {
+        DispatchQueue.main.async {
+          PresenceController.shared.noteHardFailure(
+            "Couldn’t start the agent — \(error.localizedDescription)"
+          )
+          let alert = NSAlert()
+          alert.messageText = "Could not start agent"
+          alert.informativeText = error.localizedDescription
+          alert.alertStyle = .warning
+          alert.runModal()
+          self.refreshUI()
+        }
+      }
     }
   }
 }

@@ -46,6 +46,9 @@
 | K31 | Info | Outlook approval email is outbox-only when Graph is not configured (`NOT_CONFIGURED`). | Set Entra + `GRAPH_SENDER` for live send; web approval works without it. |
 | K32 | Info | Phase 8 install path fails closed with `PRIVILEGED_SERVICE_UNAVAILABLE` until the LaunchDaemon is installed (decision D2). | Resolved 2026-11-17: D2 approved; daemon installed (`com.sentineldesk.privileged`). |
 | K33 | Low | Catalogue `github-cli` package receipt id is seeded as `github.cli`; confirm against `pkgutil --pkg-info` after first approved install. | Resolved: real receipt is `com.github.cli` (install succeeded; first job reported FAILED_VERIFICATION). |
+| K34 | Info | DMG / ZIP catalogue + agent support landed. Devices keep advertising pkg-only until the privileged daemon is rebuilt/reinstalled (D2). | Roll out: migrate → backend → `make macos-desktop-install` → D2 daemon upgrade. |
+| K35 | Info | Not supported this phase: DMGs with license/SLA prompts (`DMG_LICENSE_PROMPT`), vendor “installer .app” wizards (e.g. Adobe Creative Cloud desktop), per-user `~/Applications`, uninstall jobs. | Repackage as a silent `.pkg` or wait for a later phase. |
+| K36 | Low | Self-updating apps (Chrome, Slack, …) ahead of the catalogue return `NEWER_VERSION_INSTALLED` (treated like already installed; never downgraded). | Keep catalogue versions current for demos; copy explains “you're up to date”. |
 | K16 | Info | Vite dev server binds 127.0.0.1 but cookies/CSRF/Entra redirect use `http://localhost:5173`. Open the app at `localhost`, not `127.0.0.1`, or the Origin check rejects sign-in. Hit during owner validation. | Fixed: dev server now redirects `127.0.0.1:5173` → `localhost:5173` (307). |
 
 ## Risks

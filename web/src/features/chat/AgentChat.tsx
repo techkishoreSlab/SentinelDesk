@@ -10,8 +10,12 @@ import {
   submitRequest,
 } from "../requests/api";
 import {
+  formatInstallElapsed,
+  installFailureCopy,
   installHeadline,
   installPhases,
+  installElapsedAnchorIso,
+  installProgressView,
   isActiveInstallStatus,
   isTerminalRequestStatus,
 } from "../requests/installPhase";
@@ -114,6 +118,28 @@ function InstallActivity({
   const active = isActiveInstallStatus(req.status);
   const awaiting = req.status === "AWAITING_APPROVAL";
   const phases = installPhases(req.status);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  const progress = installProgressView(
+    {
+      status: req.status,
+      progressPhase: req.progressPhase,
+      progressBytesDone: req.progressBytesDone,
+      progressBytesTotal: req.progressBytesTotal,
+      progressUpdatedAt: req.progressUpdatedAt,
+    },
+    nowMs,
+  );
+  const elapsed = active
+    ? formatInstallElapsed(
+        installElapsedAnchorIso({ createdAt: req.createdAt, jobClaimedAt: req.jobClaimedAt }),
+        nowMs,
+      )
+    : "";
   const cancellable =
     req.status === "AWAITING_APPROVAL" ||
     req.status === "QUEUED" ||
@@ -134,12 +160,44 @@ function InstallActivity({
       <div className="install-activity-head">
         <span className={statusBadgeClass(req.status)}>{req.status}</span>
         <p className="install-headline">{installHeadline(req.status)}</p>
+        {req.status.includes("FAIL") && installFailureCopy(req.decisionReason) && (
+          <p className="form-error">{installFailureCopy(req.decisionReason)}</p>
+        )}
       </div>
       {(active || req.status === "SUCCEEDED" || req.status.includes("FAIL")) && (
         <>
           {active && (
-            <div className="install-bar" aria-hidden="true">
-              <span className="install-bar-fill" />
+            <div className="install-progress-block">
+              <div
+                className={
+                  progress.indeterminate
+                    ? "install-bar install-bar-indeterminate"
+                    : "install-bar install-bar-determinate"
+                }
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={progress.percent ?? undefined}
+                aria-valuetext={progress.detail || undefined}
+              >
+                <span
+                  className="install-bar-fill"
+                  style={
+                    !progress.indeterminate && progress.percent !== null
+                      ? { width: `${progress.percent}%` }
+                      : undefined
+                  }
+                />
+              </div>
+              <div className="install-progress-meta">
+                <span>
+                  {progress.detail}
+                  {progress.percent !== null && !progress.indeterminate
+                    ? ` · ${progress.percent}%`
+                    : ""}
+                </span>
+                {elapsed ? <span className="install-elapsed">{elapsed}</span> : null}
+              </div>
             </div>
           )}
           <ol className="install-phases" aria-label="Install phases">
@@ -342,7 +400,12 @@ export function AgentChat({
       setMessages((prev) =>
         prev.map((msg) => {
           if (msg.role !== "assistant" || !msg.request || msg.request.id !== row.id) return msg;
-          if (msg.request.status === row.status) return msg;
+          const same =
+            msg.request.status === row.status &&
+            msg.request.progressPhase === row.progressPhase &&
+            msg.request.progressBytesDone === row.progressBytesDone &&
+            msg.request.progressBytesTotal === row.progressBytesTotal;
+          if (same) return msg;
           return {
             ...msg,
             text: friendlyPreviewCopy(
@@ -369,7 +432,8 @@ export function AgentChat({
     };
 
     tick();
-    const timer = window.setInterval(tick, 4000);
+    const pollMs = isActiveInstallStatus(trackedStatus) ? 2000 : 4000;
+    const timer = window.setInterval(tick, pollMs);
     const onVis = () => {
       if (document.visibilityState === "visible") tick();
     };

@@ -12,6 +12,11 @@ export interface SoftwareRequest {
   requestVersion: number;
   replayed: boolean;
   createdAt: string;
+  progressPhase: string | null;
+  progressBytesDone: number | null;
+  progressBytesTotal: number | null;
+  progressUpdatedAt: string | null;
+  jobClaimedAt: string | null;
 }
 
 export interface ApprovalItem {
@@ -44,6 +49,12 @@ function list(value: unknown): unknown[] {
   return value;
 }
 
+function optNum(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
+}
+
 export function parseRequest(value: unknown): SoftwareRequest {
   if (!isRecord(value)) throw new TypeError("invalid request");
   return {
@@ -58,6 +69,11 @@ export function parseRequest(value: unknown): SoftwareRequest {
     requestVersion: typeof value["request_version"] === "number" ? value["request_version"] : 1,
     replayed: value["replayed"] === true,
     createdAt: str(value["created_at"], "created_at"),
+    progressPhase: optStr(value["progress_phase"], "progress_phase"),
+    progressBytesDone: optNum(value["progress_bytes_done"]),
+    progressBytesTotal: optNum(value["progress_bytes_total"]),
+    progressUpdatedAt: optStr(value["progress_updated_at"], "progress_updated_at"),
+    jobClaimedAt: optStr(value["job_claimed_at"], "job_claimed_at"),
   };
 }
 

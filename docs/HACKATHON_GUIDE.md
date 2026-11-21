@@ -1,212 +1,249 @@
 # SentinelDesk — Hackathon Guide
 
-One-page guide for running the demo and explaining the product to your hackathon head.
+**Use this doc on a new Mac after cloning from GitHub.**  
+It matches the current repo: Docker control plane, web console, Sentinel.app agent, privileged install daemon, chat install progress.
 
 ---
 
 ## What it is
 
-**SentinelDesk** is an enterprise software request + install platform:
+Enterprise software request → policy/approval → **verified install on the enrolled Mac** → audit trail.
 
-1. Employee asks for software in chat (e.g. “install Go”).
-2. Policy decides: auto-approve or send to an Approver.
-3. A Mac **endpoint agent** installs the approved package on the enrolled machine.
-4. Every step is audited.
+| Layer | URL / location | Role |
+|---|---|---|
+| Web console | `http://localhost:5173` | Chat, Approvals, Catalogue, Enroll, Audit |
+| Backend API | `http://localhost:8000` | Auth, catalogue, policy, jobs |
+| Agent gateway (TLS) | `https://localhost:8443` | What the Mac agent talks to |
+| Sentinel.app | Menu bar | Runs agent; can start/stop local Docker on this Mac |
+| Privileged daemon | LaunchDaemon | Root install into `/Applications` (`.pkg` / `.dmg` / `.zip`) |
 
-**This week’s demo is macOS-first.** Windows/Linux agents are later.
-
-| Layer | What it does |
-|---|---|
-| Web console | Chat, Approvals, Catalogue, Audit (`http://localhost:5173`) |
-| Backend + DB | Auth, catalogue, policy, jobs, audit trail |
-| Agent gateway | TLS API the Mac agent talks to (`https://localhost:8443`) |
-| **Sentinel.app** | Menu-bar app: runs the agent; on the builder Mac it can also start/stop the local Docker stack |
+macOS only for this demo. Windows/Linux agents are later.
 
 ---
 
-## Prerequisites
+## New Mac — prerequisites
 
-- Docker Desktop running (Engine green)
-- This repo at `~/Documents/Sentinel_Desk` (or your clone path)
-- One-time: `make init` (creates `.env` + signing keys if missing)
-- Package store folder:
+Install these **before** cloning:
+
+| Tool | Why |
+|---|---|
+| **Docker Desktop** | Postgres + backend + TLS gateway (`make up`) |
+| **Xcode Command Line Tools** | `swiftc` for Sentinel.app (`xcode-select --install`) |
+| **Rust** (`rustup`) | Builds `sentinel-agent` / privileged daemon |
+| **uv** + Python 3.12 | Backend CLI (`seed-dev`, `dev-certs`) |
+| **Node.js + npm** | Web console (`npm run dev`) |
+| Mac **admin password** | Privileged LaunchDaemon install |
 
 ```bash
+# Typical PATH for tools installed via rustup / pip --user
+export PATH="$HOME/.cargo/bin:$HOME/Library/Python/3.10/bin:$PATH"
+```
+
+Docker Desktop must show **Engine running** (green) before `make up`.
+
+---
+
+## From GitHub clone → full product (do once)
+
+Replace `YOUR_ORG/Sentinel_Desk` with your real GitHub URL.
+
+### 1. Clone
+
+```bash
+cd ~/Documents
+git clone https://github.com/YOUR_ORG/Sentinel_Desk.git
+cd Sentinel_Desk
+```
+
+`.env`, `dev-keys/`, `dev-certs/`, and `secrets/dev-accounts.txt` are **git-ignored**. A fresh clone does not include passwords or signing keys — the next steps create them.
+
+### 2. Init secrets + package store
+
+```bash
+make init
 mkdir -p /Users/Shared/SentinelDesk/packages
 ```
 
-Dev logins (local only): see `secrets/dev-accounts.txt`  
-Accounts include `employee.one`, `approver`, `software.admin`, `platform.admin` — all `@sentinel.test`.
+Creates `.env` and job-signing keys if missing (safe to re-run; does not overwrite existing secrets).
 
----
+### 3. Start the control plane
 
-## How to run
+```bash
+make up
+curl -s http://localhost:8000/health/ready
+```
 
-### Option A — Click the desktop app (recommended for demos)
+Expect JSON with `"status":"ready"` and database OK.  
+This builds/starts Postgres, migrations, backend (`:8000`), and agent gateway (`:8443`).
+
+### 4. Seed accounts + demo catalogue + security
+
+```bash
+cd ~/Documents/Sentinel_Desk/backend
+uv run python -m app.cli seed-dev
+uv run python -m app.cli seed-catalogue
+uv run python -m app.cli seed-security
+```
+
+Passwords are written **once** to:
+
+`~/Documents/Sentinel_Desk/secrets/dev-accounts.txt`
+
+| Email | Use for |
+|---|---|
+| `employee.one@sentinel.test` | Chat / request software |
+| `approver@sentinel.test` | Approvals |
+| `software.admin@sentinel.test` | Catalogue → Add software |
+| `platform.admin@sentinel.test` | Enroll device token |
+| `auditor@sentinel.test` | Audit trail |
+
+Keep that file private. Do not commit it.
+
+### 5. Web console
+
+```bash
+cd ~/Documents/Sentinel_Desk/web
+npm ci
+npm run dev
+```
+
+Open **http://localhost:5173** (use `localhost`, not `127.0.0.1`).
+
+### 6. Sentinel.app (menu-bar agent)
 
 ```bash
 cd ~/Documents/Sentinel_Desk
-make up                          # first time / if stack is down
-make macos-desktop-install       # installs /Applications/Sentinel.app
+make macos-desktop-install
 open /Applications/Sentinel.app
 ```
 
-**Open Sentinel** (with Local demo stack on):
+- Gatekeeper may block first open → **System Settings → Privacy & Security → Open Anyway**.
+- Preferences (seeded for local demo):
+  - Backend: `https://localhost:8443`
+  - Web console: `http://localhost:5173`
+  - Local demo stack: **on** (this Mac runs Docker via Sentinel)
 
-- Starts Docker Compose (backend + gateway)
-- Starts the Mac agent
-- Opens the web console
+### 7. Privileged install daemon (required for real installs)
 
-Menu bar should show **Online** (or briefly Offline while heartbeats catch up).
-
-### Option B — Terminal only
+Without this, installs fail with `PRIVILEGED_SERVICE_UNAVAILABLE` or stay pkg-only.
 
 ```bash
 cd ~/Documents/Sentinel_Desk
-make up
-cd web && npm ci && npm run dev   # http://localhost:5173
+SENTINEL_APPROVE_LAUNCHDAEMON=I_APPROVE_D2 sudo -E ./scripts/install-privileged-launchdaemon.sh
 ```
 
-Then install/open Sentinel for the agent, or use `make macos-agent-install` for the LaunchAgent path.
+Enter the Mac admin password when prompted. Daemon supports **pkg, dmg, and zip** app installs when this step succeeds.
 
-### First-time Mac enrollment
+### 8. Enroll this Mac (token alone is not enough)
 
-1. Sign in as an admin who can manage devices.
-2. Create an enrollment token for an **employee** user.
-3. Enroll from the agent / Sentinel flow so the device appears **ACTIVE**.
-4. Keep **Sentinel** running in the menu bar during installs.
+**A. Create token (browser)**
+
+1. Sign in as `platform.admin@sentinel.test`.
+2. Left nav → **Enroll**.
+3. Owner → `employee.one@sentinel.test`.
+4. **Create enrollment token** → copy `sde_…` (shown once).
+
+**B. Consume token (Terminal on this Mac)**
+
+```bash
+AGENT="/Applications/Sentinel.app/Contents/MacOS/sentinel-agent"
+export SENTINEL_BACKEND_URL="https://localhost:8443"
+export SENTINEL_CA_CERT="$HOME/Documents/Sentinel_Desk/dev-certs/ca.pem"
+
+"$AGENT" enroll
+# Paste the token at the prompt (it will not echo), then Enter
+```
+
+Re-enroll if needed: `"$AGENT" enroll --force`.
+
+**C. Confirm**
+
+1. Keep Sentinel.app open → menu bar should reach **Online**.
+2. Sign in as `employee.one@sentinel.test` → **My devices** → this Mac **ACTIVE**.
+
+---
+
+## Day-of demo (after setup)
+
+1. Docker Desktop green.
+2. `make up` (if containers are down).
+3. `cd web && npm run dev` (if console is not already up).
+4. Open **Sentinel.app** → Online.
+5. Employee chat → request software (device selected).
+6. Approver → **Approvals** → approve (if required).
+7. Watch install card (download % when known; indeterminate during install/verify) → **SUCCEEDED**.
+8. Optional: show Audit / Overview.
+
+### Suggested request
+
+- Seeded titles (Git, VS Code, …) or **Catalogue → Add software** (Popular apps / URL / upload).
+- Prefer an app **not already** on the Mac, or you may get `ALREADY_INSTALLED` / newer-version messaging.
+- Prefer **universal** or matching CPU (Intel vs Apple Silicon) packages.
+
+### 10-minute talk track
+
+1. Menu bar Online = endpoint agent on the employee Mac.
+2. Employee asks in chat → policy may require approval.
+3. Approver approves → agent installs with digest / Team ID checks.
+4. Audit shows who asked, who approved, what ran.
 
 ---
 
 ## How to stop
 
-### Stop the desktop app (demo Mac)
-
-- Menu bar → **Quit Sentinel**, or popover → Quit (⌘Q).
-
-With Local demo stack enabled, quit also:
-
-- Stops the agent
-- Runs `docker compose down`
-
-### Stop the stack from Terminal
-
-```bash
-cd ~/Documents/Sentinel_Desk
-make down
-```
-
-### Stop LaunchAgents only (if you used `macos-agent-install`)
-
-```bash
-launchctl bootout "gui/$(id -u)/com.sentineldesk.agent"
-launchctl bootout "gui/$(id -u)/com.sentineldesk.menubar"
-```
-
----
-
-## How to add software to the catalogue
-
-Use the **software admin** account (`software.admin@sentinel.test`).
-
-1. Open `http://localhost:5173` → sign in.
-2. Go to **Catalogue** → **Add software**.
-3. Choose source:
-   - **HTTPS URL** (installer download), or
-   - **Upload .pkg**
-4. Fill title / alias people will say in chat (e.g. “Go”, “gh”).
-5. Leave **Require approval** checked for CLI / developer tools (recommended).
-6. Submit.
-
-What happens behind the scenes:
-
-- Package is staged under `/Users/Shared/SentinelDesk/packages`
-- SHA-256 is computed and **pinned** in the catalogue
-- Employees can resolve it by alias in chat
-- Installs go through policy → optional Approvals → agent job
-
-**Note:** Actual `.pkg` install on the Mac still needs the privileged install daemon (Phase 8 / D2). Catalogue + request + job flow works without it; privileged install is for real package execution.
-
-### Seeded demo catalogue (optional)
-
-If the catalogue looks empty:
-
-```bash
-cd ~/Documents/Sentinel_Desk/backend
-uv run python -m app.cli seed-catalogue
-```
-
----
-
-## 10-minute demo script (for your head)
-
-1. **Menu bar** — Sentinel shows Online. “This is the endpoint agent on the employee Mac.”
-2. **Employee chat** — Sign in as `employee.one` → ask “install Go” (or another catalogue title).
-3. **Approval** — If require-approval is on, sign in as `approver` → **Approvals** → approve.
-4. **Install** — Menu bar flips to Installing… then Online. Verify with `go version` / `gh --version` if that package was installed.
-5. **Audit** — Show Audit / Overview: who asked, who approved, what ran.
-
-### Roles to mention
-
-| Role | Job in the demo |
+| Action | How |
 |---|---|
-| Employee | Requests software in chat |
-| Approver | Approves / denies installs |
-| Software admin | Adds packages to the catalogue |
-| Auditor | Reads the hash-chained audit log |
-| Platform admin | Users, roles, devices |
+| Quit Sentinel | Menu bar → Quit (⌘Q). With Local demo stack on, this also stops the agent and can run `docker compose down`. |
+| Stop stack only | `cd ~/Documents/Sentinel_Desk && make down` |
+| Old LaunchAgent path only | `launchctl bootout "gui/$(id -u)/com.sentineldesk.agent"` and `…/com.sentineldesk.menubar` |
 
 ---
 
-## Architecture in one picture
+## Architecture
 
 ```
-Employee browser ──► Web (5173) ──► Backend API (8000)
-                                         │
-                                         ├── Postgres (catalogue, jobs, audit)
-                                         │
+Browser (5173) ──► Backend (8000) ──► Postgres
+                         ▲
 Mac Sentinel.app ──TLS──► Agent gateway (8443)
    │
-   └── installs approved packages on this Mac
+   └── privileged daemon → /Applications
 ```
 
-**SaaS vs local demo**
-
-| Mode | Control plane | Sentinel.app |
-|---|---|---|
-| Real SaaS | Always-on cloud / shared host | Agent only (connect by URL) |
-| This hackathon laptop | Docker Compose in the repo | Can start/stop stack on open/quit |
-
-Shared zip builds leave “Local demo stack” **off**. Your builder Mac install turns it **on** for convenience.
+Ports bind to **127.0.0.1** only. This Mac runs its own stack; another laptop cannot share this backend without networking changes.
 
 ---
 
-## Troubleshooting (quick)
+## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Menu bar: Control plane / docker compose failed | Start Docker Desktop; reopen Sentinel; check `~/Library/Application Support/com.SentinelDesk.Agent/stack.log` |
-| Offline · retry… | Wait ~10–30s after open; confirm `make up` / containers healthy |
-| No “Add software” | Sign in as `software.admin`, not platform admin only |
-| Port 5173 already in use | Fine — Sentinel skips starting Vite if something already serves the console |
-| Gatekeeper blocks .app | System Settings → Privacy & Security → Open Anyway |
+| `docker compose` / migrate failed | Docker Engine green; `make up`; if migrate can’t find a revision, rebuild: `docker compose up -d --build --wait` |
+| Sentinel **Issue** / stack failed | `~/Library/Application Support/com.SentinelDesk.Agent/stack.log` |
+| Offline forever | Wait 10–30s; `curl localhost:8000/health/ready`; reopen Sentinel |
+| No enrolled device in chat | Finish enroll steps (token **and** `sentinel-agent enroll`) |
+| `PRIVILEGED_SERVICE_UNAVAILABLE` | Re-run section 7 (LaunchDaemon) |
+| Stuck **RUNNING** after restart | Agent should close interrupted jobs on next start; otherwise wait for job TTL or ask again |
+| CSRF / login odd | Use `http://localhost:5173`, not `127.0.0.1` |
+| Gatekeeper blocks app | Privacy & Security → Open Anyway |
+| Empty catalogue | Re-run `seed-catalogue` or Add software as `software.admin` |
+| No “Add software” | Sign in as `software.admin@sentinel.test` |
 
 ---
 
 ## One-liners for the head
 
 - **Problem:** Shadow IT and unsafe installers; no approval trail.
-- **Product:** Chat request → policy → approval → verified install on the Mac → audit.
-- **Trust:** Pinned digests, require-approval for risky tools, device enrollment + TLS agent channel.
-- **Demo surface:** Menu-bar Online + web chat + Approvals + Catalogue Add software.
+- **Product:** Chat → policy → approval → verified Mac install → audit.
+- **Trust:** Pinned digests, Team ID checks, enrollment + TLS agent channel.
+- **Demo:** Menu-bar Online + web chat + Approvals + Catalogue.
 
 ---
 
-## Related docs (deeper detail)
+## Related docs
 
-| Doc | When to open it |
+| Doc | When |
 |---|---|
-| [`DEMO_THIS_WEEK.md`](DEMO_THIS_WEEK.md) | Short Mac demo checklist |
-| [`MAC_DESKTOP_APP.md`](MAC_DESKTOP_APP.md) | Sentinel.app build / share / SaaS vs demo stack |
-| [`ENVIRONMENT_SETUP.md`](ENVIRONMENT_SETUP.md) | Full prerequisites, seeds, Entra, checks |
-| [`PROJECT_PROGRESS.md`](PROJECT_PROGRESS.md) | Phase scorecard and what is validated |
+| [`INTEL_MAC_DEMO_FROM_SCRATCH.md`](INTEL_MAC_DEMO_FROM_SCRATCH.md) | Extra detail / print checklist |
+| [`MAC_DESKTOP_APP.md`](MAC_DESKTOP_APP.md) | Sentinel.app build / share zip |
+| [`ENVIRONMENT_SETUP.md`](ENVIRONMENT_SETUP.md) | Tool versions, Entra, deeper env |
+| [`PROJECT_PROGRESS.md`](PROJECT_PROGRESS.md) | Phase scorecard |

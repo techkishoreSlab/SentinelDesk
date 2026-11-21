@@ -55,12 +55,20 @@ pub struct DeviceFacts {
     pub installed_software: Vec<InstalledSoftware>,
 }
 
+/// Installer kinds this endpoint can execute (agent ∩ privileged daemon).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeviceCapabilities {
+    pub installers: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EnrollRequest<'a> {
     pub protocol_version: u16,
     pub enrollment_token: &'a str,
     pub agent_version: &'a str,
     pub facts: &'a DeviceFacts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<&'a DeviceCapabilities>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,6 +76,8 @@ pub struct HeartbeatRequest<'a> {
     pub protocol_version: u16,
     pub agent_version: &'a str,
     pub facts: &'a DeviceFacts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<&'a DeviceCapabilities>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

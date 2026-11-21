@@ -188,6 +188,113 @@ async def test_claim_signed_job_started_and_result(
 
 
 @pytest.mark.asyncio
+async def test_job_progress_download_then_conflict_when_terminal(
+    client: httpx.AsyncClient,
+    agent: httpx.AsyncClient,
+    people: dict[str, SeededUser],
+    seeded: None,
+    settings: Any,
+) -> None:
+    token = await new_token(client, people["employee"])
+    creds = await enroll(agent, token)
+    device_id = creds["device_id"]
+    secret = creds["device_credential"]
+
+    await login(client, people["employee"])
+    created = await client.post(
+        "/api/v1/software/requests",
+        headers=csrf_headers(client),
+        json={
+            "device_id": device_id,
+            "user_prompt": "Install git",
+            "idempotency_key": "idem-jobs-progress",
+        },
+    )
+    assert created.status_code == 200, created.text
+    request_id = created.json()["id"]
+    version = created.json()["request_version"]
+
+    await login(client, people["approver"])
+    decided = await client.post(
+        f"/api/v1/admin/approvals/{request_id}/decision",
+        headers=csrf_headers(client),
+        json={"decision": "APPROVED", "expected_version": version},
+    )
+    assert decided.status_code == 200, decided.text
+
+    claimed = await agent.get("/api/v1/agent/jobs/next", headers=bearer(secret))
+    assert claimed.status_code == 200, claimed.text
+    assert verify_envelope(settings, claimed.json()["envelope"], claimed.json()["signature"])
+    job_id = claimed.json()["envelope"]["job_id"]
+
+    started = await agent.post(
+        f"/api/v1/agent/jobs/{job_id}/started",
+        headers=bearer(secret),
+        json={"protocol_version": 1},
+    )
+    assert started.status_code == 204, started.text
+
+    progress = await agent.post(
+        f"/api/v1/agent/jobs/{job_id}/progress",
+        headers=bearer(secret),
+        json={
+            "protocol_version": 1,
+            "phase": "DOWNLOADING",
+            "bytes_done": 50_000_000,
+            "bytes_total": 100_000_000,
+        },
+    )
+    assert progress.status_code == 200, progress.text
+    assert progress.json()["phase"] == "DOWNLOADING"
+    assert progress.json()["bytes_done"] == 50_000_000
+
+    # Monotonic clamp: regression must not lower bytes_done.
+    clamped = await agent.post(
+        f"/api/v1/agent/jobs/{job_id}/progress",
+        headers=bearer(secret),
+        json={
+            "protocol_version": 1,
+            "phase": "DOWNLOADING",
+            "bytes_done": 10_000_000,
+            "bytes_total": 100_000_000,
+        },
+    )
+    assert clamped.status_code == 200, clamped.text
+    assert clamped.json()["bytes_done"] == 50_000_000
+
+    await login(client, people["employee"])
+    detail = await client.get(f"/api/v1/software/requests/{request_id}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["progress_phase"] == "DOWNLOADING"
+    assert body["progress_bytes_done"] == 50_000_000
+    assert body["progress_bytes_total"] == 100_000_000
+
+    result = await agent.post(
+        f"/api/v1/agent/jobs/{job_id}/result",
+        headers=bearer(secret),
+        json={
+            "protocol_version": 1,
+            "result_code": "PRIVILEGED_SERVICE_UNAVAILABLE",
+            "result_summary": "phase 8 gate",
+            "verification_status": "NOT_ATTEMPTED",
+            "details": {},
+        },
+    )
+    assert result.status_code == 200, result.text
+
+    rejected = await agent.post(
+        f"/api/v1/agent/jobs/{job_id}/progress",
+        headers=bearer(secret),
+        json={
+            "protocol_version": 1,
+            "phase": "INSTALLING",
+        },
+    )
+    assert rejected.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_jobs_next_204_when_empty(
     client: httpx.AsyncClient,
     agent: httpx.AsyncClient,

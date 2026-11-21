@@ -30,7 +30,13 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      "/api": { target: backend, changeOrigin: false },
+      // Catalogue inspect can download 100–300 MB installers; keep the proxy open.
+      "/api": {
+        target: backend,
+        changeOrigin: false,
+        timeout: 900_000,
+        proxyTimeout: 900_000,
+      },
       "/health": { target: backend, changeOrigin: false },
     },
   },

@@ -53,6 +53,9 @@ class RiskLevel(StrEnum):
 
 class InstallerType(StrEnum):
     MACOS_PKG = "MACOS_PKG"
+    MACOS_DMG_APP = "MACOS_DMG_APP"
+    MACOS_DMG_PKG = "MACOS_DMG_PKG"
+    MACOS_ZIP_APP = "MACOS_ZIP_APP"
     WINGET = "WINGET"
     MSI = "MSI"
     APT = "APT"

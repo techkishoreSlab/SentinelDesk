@@ -66,6 +66,11 @@ def serialize_request(
     version: str | None = None,
     explanation: str | None = None,
     replayed: bool = False,
+    progress_phase: str | None = None,
+    progress_bytes_done: int | None = None,
+    progress_bytes_total: int | None = None,
+    progress_updated_at: datetime | None = None,
+    job_claimed_at: datetime | None = None,
 ) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -86,7 +91,32 @@ def serialize_request(
         "updated_at": row.updated_at,
         "expires_at": row.expires_at,
         "replayed": replayed,
+        "progress_phase": progress_phase,
+        "progress_bytes_done": progress_bytes_done,
+        "progress_bytes_total": progress_bytes_total,
+        "progress_updated_at": progress_updated_at,
+        "job_claimed_at": job_claimed_at,
     }
+
+
+async def _job_progress(
+    db: AsyncSession, request_id: uuid.UUID
+) -> tuple[str | None, int | None, int | None, datetime | None, datetime | None]:
+    job = await db.scalar(
+        select(InstallationJob)
+        .where(InstallationJob.request_id == request_id)
+        .order_by(InstallationJob.issued_at.desc())
+        .limit(1)
+    )
+    if job is None:
+        return None, None, None, None, None
+    return (
+        job.progress_phase,
+        job.progress_bytes_done,
+        job.progress_bytes_total,
+        job.progress_updated_at,
+        job.claimed_at,
+    )
 
 
 async def create_request(
@@ -111,8 +141,18 @@ async def create_request(
         slug, name, ver, _ = await _software_labels(
             db, existing.software_id, existing.catalogue_version_id
         )
+        phase, done, total, updated, claimed = await _job_progress(db, existing.id)
         return serialize_request(
-            existing, software_slug=slug, software_name=name, version=ver, replayed=True
+            existing,
+            software_slug=slug,
+            software_name=name,
+            version=ver,
+            replayed=True,
+            progress_phase=phase,
+            progress_bytes_done=done,
+            progress_bytes_total=total,
+            progress_updated_at=updated,
+            job_claimed_at=claimed,
         )
 
     device = await db.scalar(
@@ -292,7 +332,20 @@ async def list_own_requests(
     out: list[dict[str, Any]] = []
     for row in rows:
         slug, name, ver, _ = await _software_labels(db, row.software_id, row.catalogue_version_id)
-        out.append(serialize_request(row, software_slug=slug, software_name=name, version=ver))
+        phase, done, total, updated, claimed = await _job_progress(db, row.id)
+        out.append(
+            serialize_request(
+                row,
+                software_slug=slug,
+                software_name=name,
+                version=ver,
+                progress_phase=phase,
+                progress_bytes_done=done,
+                progress_bytes_total=total,
+                progress_updated_at=updated,
+                job_claimed_at=claimed,
+            )
+        )
     return out
 
 
@@ -307,7 +360,18 @@ async def get_own_request(
     if row is None:
         raise AppError("NOT_FOUND", 404)
     slug, name, ver, _ = await _software_labels(db, row.software_id, row.catalogue_version_id)
-    return serialize_request(row, software_slug=slug, software_name=name, version=ver)
+    phase, done, total, updated, claimed = await _job_progress(db, row.id)
+    return serialize_request(
+        row,
+        software_slug=slug,
+        software_name=name,
+        version=ver,
+        progress_phase=phase,
+        progress_bytes_done=done,
+        progress_bytes_total=total,
+        progress_updated_at=updated,
+        job_claimed_at=claimed,
+    )
 
 
 async def cancel_own_request(

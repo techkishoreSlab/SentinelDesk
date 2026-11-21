@@ -1,5 +1,6 @@
 /** Conversational install agent: multi-turn context + niche scope (not a general chatbot). */
 
+import { installFailureCopy } from "../requests/installPhase";
 import { guardInput, guardOutputText, isContinuePhrase } from "./guardrails";
 
 export type ThreadContext = {
@@ -247,9 +248,14 @@ export function friendlyPreviewCopy(
       explanation || "Done — the software is installed and verified on your device.",
     );
   }
+  const failureCopy =
+    status === "INCOMPATIBLE" || status === "ALREADY_INSTALLED" || status === "FAILED"
+      ? installFailureCopy(reason)
+      : null;
+  if (failureCopy) return guardOutputText(failureCopy);
   if (status === "FAILED" || status === "FAILED_VERIFICATION") {
     return guardOutputText(
-      explanation ||
+      (explanation !== reason ? explanation : "") ||
         "The install finished on the device but verification failed. Share the request ID with support, " +
           "or say “try again” after the catalogue version is corrected.",
     );

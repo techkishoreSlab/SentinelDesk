@@ -6,6 +6,8 @@
 
 #![deny(unsafe_code)]
 
+mod archive;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -33,6 +35,22 @@ struct Cli {
     /// Group allowed to connect to the socket (mode 660). Default: staff on macOS.
     #[arg(long, env = "SENTINEL_SOCKET_GROUP", default_value = "staff")]
     socket_group: String,
+
+    /// Root-only directory for private archive copies and disk-image mounts.
+    #[arg(
+        long,
+        env = "SENTINEL_STAGING_ROOT",
+        default_value = "/var/db/sentineldesk/staging"
+    )]
+    staging_root: PathBuf,
+
+    /// Where app bundles from DMG / ZIP archives are installed.
+    #[arg(
+        long,
+        env = "SENTINEL_APPLICATIONS_DIR",
+        default_value = "/Applications"
+    )]
+    applications_dir: PathBuf,
 }
 
 fn main() {
@@ -67,10 +85,16 @@ fn run(cli: &Cli) -> Result<(), String> {
         cli.socket.display(),
         root.display()
     );
+    let layout = archive::Layout {
+        package_root: root,
+        staging_root: cli.staging_root.clone(),
+        applications: cli.applications_dir.clone(),
+    };
+    // Connections are handled one at a time, so installs never overlap.
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
-                if let Err(err) = handle_client(stream, &root) {
+                if let Err(err) = handle_client(stream, &layout) {
                     eprintln!("client error: {err}");
                 }
             }
@@ -80,7 +104,8 @@ fn run(cli: &Cli) -> Result<(), String> {
     Ok(())
 }
 
-fn handle_client(mut stream: UnixStream, package_root: &Path) -> Result<(), String> {
+fn handle_client(mut stream: UnixStream, layout: &archive::Layout) -> Result<(), String> {
+    let package_root = layout.package_root.as_path();
     let mut buf = vec![0_u8; 64 * 1024];
     let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
     let req: PrivilegedRequest =
@@ -110,6 +135,45 @@ fn handle_client(mut stream: UnixStream, package_root: &Path) -> Result<(), Stri
                     &package_identifier,
                     &expected_version,
                     &package_digest,
+                )
+            }
+        }
+        PrivilegedRequest::Capabilities { protocol_version } => {
+            if protocol_version != IPC_PROTOCOL_VERSION {
+                fail("UNSUPPORTED_VERSION", "ipc protocol mismatch", None)
+            } else {
+                PrivilegedResponse {
+                    installers: Some(archive::supported_installers()),
+                    ..ok("CAPABILITIES", "supported installers", None, None)
+                }
+            }
+        }
+        PrivilegedRequest::InstallArchive {
+            protocol_version,
+            job_id,
+            kind,
+            archive_path,
+            payload_path,
+            package_identifier,
+            expected_version,
+            expected_team_id,
+            package_digest,
+        } => {
+            if protocol_version != IPC_PROTOCOL_VERSION {
+                fail("UNSUPPORTED_VERSION", "ipc protocol mismatch", None)
+            } else {
+                archive::install_archive(
+                    layout,
+                    &archive::ArchiveRequest {
+                        job_id: &job_id,
+                        kind: &kind,
+                        archive_path: &archive_path,
+                        payload_path: &payload_path,
+                        package_identifier: &package_identifier,
+                        expected_version: &expected_version,
+                        expected_team_id: &expected_team_id,
+                        package_digest: &package_digest,
+                    },
                 )
             }
         }
@@ -174,6 +238,7 @@ fn install_pkg(
             message: "installed version mismatch".into(),
             exit_code: Some(exit),
             installed_version: Some(version),
+            installers: None,
         },
         None => fail(
             "FAILED_VERIFICATION",
@@ -226,6 +291,7 @@ fn ok(
         message: message.into(),
         exit_code,
         installed_version,
+        installers: None,
     }
 }
 
@@ -236,5 +302,6 @@ fn fail(code: &str, message: &str, exit_code: Option<i32>) -> PrivilegedResponse
         message: message.into(),
         exit_code,
         installed_version: None,
+        installers: None,
     }
 }

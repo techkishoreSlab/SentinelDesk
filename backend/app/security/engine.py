@@ -17,9 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalogue import service as catalogue
 from app.catalogue.compatibility import (
-    REASON_ALREADY_INSTALLED,
     REASON_COMPATIBLE,
+    REASON_INSTALLER_UNSUPPORTED,
+    REASON_NEWER_VERSION_INSTALLED,
+    SATISFIED_REASONS,
     DeviceSnapshot,
+    device_snapshot_from,
 )
 from app.catalogue.compatibility import (
     evaluate as evaluate_compat,
@@ -86,6 +89,16 @@ _PUBLIC: dict[str, str] = {
     ),
 }
 
+_PUBLIC_BY_REASON: dict[str, str] = {
+    REASON_NEWER_VERSION_INSTALLED: (
+        "A newer version is already installed on this device, so nothing needs to change."
+    ),
+    REASON_INSTALLER_UNSUPPORTED: (
+        "This device's Sentinel agent is too old for this package format. "
+        "Update Sentinel on the device and try again."
+    ),
+}
+
 
 async def _active_policy(db: AsyncSession, software_id: uuid.UUID) -> SoftwarePolicy | None:
     now = datetime.now(UTC)
@@ -104,22 +117,7 @@ async def _active_policy(db: AsyncSession, software_id: uuid.UUID) -> SoftwarePo
 
 
 def _device_snapshot(device: Device, facts: DeviceFacts | None) -> DeviceSnapshot:
-    installed: list[dict[str, Any]] = []
-    if facts is not None and isinstance(facts.installed_software_summary, dict):
-        raw = facts.installed_software_summary.get("items", [])
-        if isinstance(raw, list):
-            installed = [i for i in raw if isinstance(i, dict)]
-    return DeviceSnapshot(
-        enrolled=True,
-        status=device.device_status,
-        last_seen_at=device.last_seen_at,
-        os_family=device.os_family,
-        os_version=device.os_version,
-        architecture=device.architecture,
-        memory_total_bytes=facts.memory_total_bytes if facts else None,
-        disk_free_bytes=facts.disk_free_bytes if facts else None,
-        installed_software=installed,
-    )
+    return device_snapshot_from(device, facts)
 
 
 async def evaluate_install(
@@ -150,7 +148,7 @@ async def evaluate_install(
         return PolicyEvaluation(
             outcome=outcome,
             reason_code=reason,
-            public_message=_PUBLIC[outcome],
+            public_message=_PUBLIC_BY_REASON.get(reason, _PUBLIC[outcome]),
             compatible=compatible,
             compatibility_reason=compat_reason,
             threat_verdict=threat_result.verdict.value if threat_result else None,
@@ -229,7 +227,7 @@ async def evaluate_install(
         snap,
         stale_after=timedelta(seconds=settings.device_stale_after_seconds),
     )
-    if compat.reason_code == REASON_ALREADY_INSTALLED:
+    if compat.reason_code in SATISFIED_REASONS:
         return finish(
             OUTCOME_ALREADY_INSTALLED,
             compat.reason_code,

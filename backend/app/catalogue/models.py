@@ -33,6 +33,24 @@ from app.db.enums import (
     VerificationMethod,
 )
 
+ARCHIVE_INSTALLER_TYPES = (
+    InstallerType.MACOS_DMG_APP.value,
+    InstallerType.MACOS_DMG_PKG.value,
+    InstallerType.MACOS_ZIP_APP.value,
+)
+_ARCHIVE_IN = ", ".join(f"'{t}'" for t in ARCHIVE_INSTALLER_TYPES)
+ARCHIVE_FIELDS_CHECK = (
+    f"installer_type NOT IN ({_ARCHIVE_IN}) "
+    "OR (expected_team_id IS NOT NULL AND payload_path IS NOT NULL)"
+)
+# One top-level name: no slash, no leading dot, no "..", correct suffix for the kind.
+PAYLOAD_PATH_CHECK = (
+    "payload_path IS NULL OR ("
+    "payload_path !~ '[/\\\\]' AND payload_path !~ '^\\.' AND position('..' in payload_path) = 0 "
+    "AND ((installer_type IN ('MACOS_DMG_APP', 'MACOS_ZIP_APP') AND payload_path ~ '\\.app$') "
+    "OR (installer_type = 'MACOS_DMG_PKG' AND payload_path ~ '\\.pkg$')))"
+)
+
 
 class CatalogueSoftware(Base):
     __tablename__ = "catalogue_software"
@@ -80,6 +98,12 @@ class CatalogueVersion(Base):
         enum_check("release_status", LifecycleStatus),
         enum_check("verification_method", VerificationMethod),
         CheckConstraint("sha256 IS NULL OR sha256 ~ '^[0-9a-f]{64}$'", name="sha256_format"),
+        CheckConstraint(
+            "expected_team_id IS NULL OR expected_team_id ~ '^[A-Z0-9]{10}$'",
+            name="expected_team_id_format",
+        ),
+        CheckConstraint(ARCHIVE_FIELDS_CHECK, name="archive_fields_required"),
+        CheckConstraint(PAYLOAD_PATH_CHECK, name="payload_path_format"),
         *non_negative("minimum_memory_bytes", "minimum_disk_bytes", "package_size_bytes"),
     )
 
@@ -103,6 +127,10 @@ class CatalogueVersion(Base):
     signature_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     package_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     release_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Archive installers (DMG / ZIP): Apple Developer Team ID and the single top-level item
+    # inside the container to install. Both are NULL for flat .pkg versions.
+    expected_team_id: Mapped[str | None] = mapped_column(String(10))
+    payload_path: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = created_at()
 
 

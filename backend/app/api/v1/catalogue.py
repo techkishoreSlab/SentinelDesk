@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import Principal, require
 from app.auth.rbac import Permission
 from app.catalogue import service as catalogue
-from app.catalogue.compatibility import DeviceSnapshot, evaluate
+from app.catalogue.compatibility import device_snapshot_from, evaluate
 from app.catalogue.models import CatalogueSoftware
 from app.catalogue.schemas import (
     CompatibilityOut,
@@ -108,23 +108,7 @@ async def check_compatibility(
         .order_by(DeviceFacts.collected_at.desc())
         .limit(1)
     )
-    installed: list[dict[str, object]] = []
-    if facts is not None and isinstance(facts.installed_software_summary, dict):
-        raw = facts.installed_software_summary.get("items", [])
-        if isinstance(raw, list):
-            installed = [i for i in raw if isinstance(i, dict)]
-
-    snapshot = DeviceSnapshot(
-        enrolled=True,
-        status=device.device_status,
-        last_seen_at=device.last_seen_at,
-        os_family=device.os_family,
-        os_version=device.os_version,
-        architecture=device.architecture,
-        memory_total_bytes=facts.memory_total_bytes if facts else None,
-        disk_free_bytes=facts.disk_free_bytes if facts else None,
-        installed_software=installed,
-    )
+    snapshot = device_snapshot_from(device, facts)
     result = evaluate(
         snapshot,
         catalogue.package_snapshot(software, version),

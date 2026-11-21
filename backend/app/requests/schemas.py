@@ -44,6 +44,13 @@ class RequestOut(BaseModel):
     updated_at: datetime
     expires_at: datetime | None
     replayed: bool = False
+    # Latest installation job progress (null when no job / legacy agent).
+    progress_phase: str | None = None
+    progress_bytes_done: int | None = None
+    progress_bytes_total: int | None = None
+    progress_updated_at: datetime | None = None
+    # When the device claimed the job (stable elapsed start for the install card).
+    job_claimed_at: datetime | None = None
 
 
 class RequestListOut(BaseModel):

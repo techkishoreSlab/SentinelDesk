@@ -49,3 +49,6 @@ artifacts/
 .idea/
 .vscode/
 *.swp
+
+# Generated DMG test images (local)
+fixtures/dmgs/

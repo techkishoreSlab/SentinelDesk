@@ -6,13 +6,18 @@ APP_SRC="${ROOT}/build/macos/Sentinel.app"
 APP_DST="/Applications/Sentinel.app"
 ZIP="$(ls -1t "${ROOT}/dist/macos"/SentinelDesk-macOS-*.zip 2>/dev/null | head -1 || true)"
 
-# Stop every prior Sentinel UI so only one menu-bar item remains.
+# Stop every prior Sentinel UI / agent so only one menu-bar item remains and the
+# new binary can report installer capabilities on first heartbeat.
 launchctl bootout "gui/$(id -u)/com.sentineldesk.menubar" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/com.sentineldesk.agent" 2>/dev/null || true
 pkill -x SentinelMenuBar 2>/dev/null || true
 pkill -x Sentinel 2>/dev/null || true
+pkill -x sentinel-agent 2>/dev/null || true
 pkill -f "com.SentinelDesk.Agent/bin/SentinelMenuBar" 2>/dev/null || true
 sleep 0.5
+# Stubborn orphans after SIGTERM (multiple relaunches share one device credential).
+pkill -9 -x sentinel-agent 2>/dev/null || true
+sleep 0.2
 
 # Prefer zip → temp extract (build/ no longer keeps a Finder-visible .app after build).
 if [[ ! -d "${APP_SRC}" ]]; then

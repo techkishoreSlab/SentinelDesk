@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from app.db.enums import OsFamily
 
@@ -50,11 +50,26 @@ class DeviceFactsIn(_Strict):
     installed_software: list[InstalledSoftware] = Field(max_length=MAX_INSTALLED_ITEMS)
 
 
+InstallerKind = Literal["MACOS_PKG", "MACOS_DMG_APP", "MACOS_DMG_PKG", "MACOS_ZIP_APP"]
+
+
+class DeviceCapabilitiesIn(_Strict):
+    """What the endpoint can install. Omitted by legacy agents (implies MACOS_PKG only)."""
+
+    installers: list[InstallerKind] = Field(min_length=1, max_length=8)
+
+    @field_validator("installers")
+    @classmethod
+    def _dedupe(cls, value: list[str]) -> list[str]:
+        return sorted(set(value))
+
+
 class EnrollRequest(_Strict):
     protocol_version: Literal[1]
     enrollment_token: str = Field(min_length=1, max_length=128)
     agent_version: AgentVersion
     facts: DeviceFactsIn
+    capabilities: DeviceCapabilitiesIn | None = None
 
 
 class EnrollResponse(BaseModel):
@@ -69,6 +84,7 @@ class HeartbeatRequest(_Strict):
     protocol_version: Literal[1]
     agent_version: AgentVersion
     facts: DeviceFactsIn
+    capabilities: DeviceCapabilitiesIn | None = None
 
 
 class HeartbeatResponse(BaseModel):

@@ -37,6 +37,13 @@ PUBLIC_MESSAGES: dict[str, str] = {
         "The installer finished, but SentinelDesk could not verify the requested version."
     ),
     "ALREADY_INSTALLED": "The requested version is already installed on this device.",
+    "NEWER_VERSION_INSTALLED": (
+        "A newer version is already installed on this device, so nothing needs to change."
+    ),
+    "INSTALLER_UNSUPPORTED": (
+        "This device's Sentinel agent is too old for this package format. "
+        "Update Sentinel on the device and try again."
+    ),
     "SELF_APPROVAL_FORBIDDEN": "You cannot approve or reject your own software request.",
     "ALREADY_DECIDED": "This request has already been decided or is no longer awaiting approval.",
     "REQUEST_EXPIRED": "This request has expired. Submit a new request.",
@@ -45,6 +52,11 @@ PUBLIC_MESSAGES: dict[str, str] = {
         "This package cannot be activated until every mandatory catalogue field is set."
     ),
     "CONFLICT": "The resource conflicts with an existing record.",
+    "PACKAGE_REJECTED": "This package can't be added to the catalogue.",
+    "CATALOGUE_VERSION_EXISTS": (
+        "This version is already in the catalogue with a different file. "
+        "Retire the existing version first or add a newer release."
+    ),
     "INVALID_CREDENTIALS": "The email or password is incorrect.",
     "CSRF_FAILED": "The request could not be verified. Refresh the page and try again.",
     "LOCAL_AUTH_DISABLED": "Local sign-in is disabled. Use your organisation's sign-in.",

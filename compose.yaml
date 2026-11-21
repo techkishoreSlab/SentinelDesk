@@ -1,7 +1,13 @@
 name: sentineldesk
 
-x-backend-runtime: &backend-runtime
+# One image for migrate + HTTP backend + TLS agent-gateway so wire schemas cannot
+# drift (e.g. heartbeat `capabilities` accepted on :8000 but 422 on :8443).
+x-control-plane-image: &control-plane-image
   build: ./backend
+  image: sentineldesk-control-plane:local
+
+x-backend-runtime: &backend-runtime
+  <<: *control-plane-image
   env_file: .env
   environment:
     # Runtime uses the least-privilege role; owner credentials are not given to the backend.
@@ -44,7 +50,7 @@ services:
       retries: 20
 
   migrate:
-    build: ./backend
+    <<: *control-plane-image
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://sentinel_app:${APP_DB_PASSWORD:?run scripts/dev-init.sh}@postgres:5432/${POSTGRES_DB}

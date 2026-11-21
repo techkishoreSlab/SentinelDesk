@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import FileResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,8 +15,10 @@ from app.audit import service as audit
 from app.auth import throttle
 from app.auth.dependencies import client_ip, get_settings_from
 from app.auth.tokens import hash_token
+from app.catalogue.models import CatalogueVersion
+from app.catalogue.store import SHA256_RE, find_artifact
 from app.core.errors import AppError
-from app.db.enums import ActorType, AuditResult, DeviceStatus
+from app.db.enums import ActorType, AuditResult, DeviceStatus, JobStatus
 from app.db.session import get_session
 from app.devices.auth import DeviceContext, get_device
 from app.devices.credentials import (
@@ -34,7 +37,15 @@ from app.devices.schemas import (
     RotateResponse,
 )
 from app.jobs import service as jobs
-from app.jobs.schemas import JobEnvelopeOut, JobResultIn, JobResultOut, JobStartedIn
+from app.jobs.schemas import (
+    JobEnvelopeOut,
+    JobProgressIn,
+    JobProgressOut,
+    JobResultIn,
+    JobResultOut,
+    JobStartedIn,
+)
+from app.requests.models import InstallationJob
 from app.users.models import User
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"])
@@ -116,6 +127,7 @@ async def enroll(
         os_version=facts.os_version,
         architecture=facts.architecture,
         agent_version=body.agent_version,
+        supported_installers=list(body.capabilities.installers) if body.capabilities else None,
         device_status=DeviceStatus.ACTIVE.value,
         enrolled_at=now,
         last_seen_at=now,
@@ -190,6 +202,8 @@ async def heartbeat(
     device.device_name = facts.device_name
     device.os_version = facts.os_version
     device.agent_version = body.agent_version
+    # Always mirror the latest report so a downgraded agent loses archive installs at once.
+    device.supported_installers = list(body.capabilities.installers) if body.capabilities else None
 
     latest = await db.scalar(
         select(DeviceFacts)
@@ -246,6 +260,25 @@ async def job_started(
     return Response(status_code=204)
 
 
+@router.post("/jobs/{job_id}/progress", response_model=JobProgressOut)
+async def job_progress(
+    job_id: uuid.UUID,
+    body: JobProgressIn,
+    ctx: DeviceContext = Depends(get_device),  # noqa: B008
+    db: AsyncSession = Depends(get_session),  # noqa: B008
+) -> JobProgressOut:
+    payload = await jobs.record_progress(
+        db,
+        device_id=ctx.device.id,
+        job_id=job_id,
+        phase=body.phase,
+        bytes_done=body.bytes_done,
+        bytes_total=body.bytes_total,
+    )
+    await db.commit()
+    return JobProgressOut.model_validate(payload)
+
+
 @router.post("/jobs/{job_id}/result", response_model=JobResultOut)
 async def job_result(
     job_id: uuid.UUID,
@@ -297,4 +330,44 @@ async def rotate_credential(
     await db.commit()
     return RotateResponse(
         device_credential=issued.secret, credential_expires_at=issued.credential.expires_at
+    )
+
+
+_ARTIFACT_JOB_STATES = frozenset(
+    {JobStatus.DISPATCHED.value, JobStatus.RUNNING.value, JobStatus.VERIFYING.value}
+)
+
+
+@router.get("/packages/{sha256}", response_model=None)
+async def download_artifact(
+    sha256: str,
+    request: Request,
+    ctx: DeviceContext = Depends(get_device),  # noqa: B008
+    db: AsyncSession = Depends(get_session),  # noqa: B008
+) -> FileResponse:
+    """Exact pinned bytes for a job this device is running (vendor URLs drift over time)."""
+    if not SHA256_RE.fullmatch(sha256):
+        raise AppError("NOT_FOUND", 404)
+    settings = get_settings_from(request)
+    path = find_artifact(settings, sha256)
+    if path is None:
+        raise AppError("NOT_FOUND", 404)
+    job = await db.scalar(
+        select(InstallationJob.id)
+        .join(CatalogueVersion, CatalogueVersion.id == InstallationJob.catalogue_version_id)
+        .where(
+            InstallationJob.device_id == ctx.device.id,
+            InstallationJob.status.in_(_ARTIFACT_JOB_STATES),
+            InstallationJob.expires_at > datetime.now(UTC),
+            CatalogueVersion.sha256 == sha256,
+        )
+        .limit(1)
+    )
+    if job is None:
+        raise AppError("FORBIDDEN", 403)
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=path.name,
+        headers={"Cache-Control": "no-store", "X-Content-SHA256": sha256},
     )

@@ -14,6 +14,9 @@ use ureq::tls::{Certificate, RootCerts, TlsConfig};
 use crate::backend_url::BackendOrigin;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Progress POSTs must never stall an install if the control plane is slow.
+const PROGRESS_TIMEOUT: Duration = Duration::from_secs(3);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_CA_FILE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug)]
@@ -79,6 +82,10 @@ pub struct Response {
 pub struct Client {
     origin: BackendOrigin,
     agent: ureq::Agent,
+    /// Short-timeout client for best-effort mid-job progress (never blocks install long).
+    progress_agent: ureq::Agent,
+    /// Same TLS trust as `agent`, but with a timeout sized for package downloads.
+    download_agent: ureq::Agent,
 }
 
 fn load_ca(path: &Path) -> Result<Certificate<'static>, HttpError> {
@@ -96,16 +103,46 @@ impl Client {
         if let Some(path) = ca_file {
             tls = tls.root_certs(RootCerts::new_with_certs(&[load_ca(path)?]));
         }
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(REQUEST_TIMEOUT))
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .https_only(origin.is_https())
-            .user_agent(concat!("sentinel-agent/", env!("CARGO_PKG_VERSION")))
-            .tls_config(tls.build())
-            .build()
-            .into();
-        Ok(Self { origin, agent })
+        let tls = tls.build();
+        let build = |timeout: Duration| -> ureq::Agent {
+            ureq::Agent::config_builder()
+                .timeout_global(Some(timeout))
+                .http_status_as_error(false)
+                .max_redirects(0)
+                .https_only(origin.is_https())
+                .user_agent(concat!("sentinel-agent/", env!("CARGO_PKG_VERSION")))
+                .tls_config(tls.clone())
+                .build()
+                .into()
+        };
+        let agent = build(REQUEST_TIMEOUT);
+        let progress_agent = build(PROGRESS_TIMEOUT);
+        let download_agent = build(DOWNLOAD_TIMEOUT);
+        Ok(Self {
+            origin,
+            agent,
+            progress_agent,
+            download_agent,
+        })
+    }
+
+    /// Stream a binary body from the control plane. Non-200 answers become `HttpError::Status`.
+    pub fn open_download(
+        &self,
+        path: &str,
+        bearer: &str,
+    ) -> Result<ureq::BodyReader<'static>, HttpError> {
+        let response = self
+            .download_agent
+            .get(self.origin.endpoint(path))
+            .header("Accept", "application/octet-stream")
+            .header("Authorization", format!("Bearer {bearer}"))
+            .call()
+            .map_err(|_| HttpError::Unreachable)?;
+        if response.status().as_u16() != 200 {
+            return Self::finish(response).and(Err(HttpError::Unreachable));
+        }
+        Ok(response.into_body().into_reader())
     }
 
     fn finish(mut response: ureq::http::Response<ureq::Body>) -> Result<Response, HttpError> {
@@ -147,8 +184,27 @@ impl Client {
         bearer: Option<&str>,
         body: &T,
     ) -> Result<Response, HttpError> {
-        let mut req = self
-            .agent
+        self.post_json_with(&self.agent, path, bearer, body)
+    }
+
+    /// Best-effort progress: same wire format, hard 3s cap so a stuck API cannot hang installs.
+    pub fn post_json_progress<T: serde::Serialize>(
+        &self,
+        path: &str,
+        bearer: Option<&str>,
+        body: &T,
+    ) -> Result<Response, HttpError> {
+        self.post_json_with(&self.progress_agent, path, bearer, body)
+    }
+
+    fn post_json_with<T: serde::Serialize>(
+        &self,
+        agent: &ureq::Agent,
+        path: &str,
+        bearer: Option<&str>,
+        body: &T,
+    ) -> Result<Response, HttpError> {
+        let mut req = agent
             .post(self.origin.endpoint(path))
             .header("Accept", "application/json");
         if let Some(token) = bearer {

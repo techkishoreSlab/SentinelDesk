@@ -5,73 +5,80 @@ final class AgentSupervisor {
   static let shared = AgentSupervisor()
 
   private var process: Process?
-  private let queue = DispatchQueue(label: "com.sentineldesk.desktop.agent")
+  private let lock = NSLock()
 
   var isRunning: Bool {
-    queue.sync { process?.isRunning == true }
+    lock.lock()
+    defer { lock.unlock() }
+    return process?.isRunning == true
   }
 
   func start(config: DesktopConfig) throws {
-    try queue.sync {
-      if process?.isRunning == true { return }
-      try ConfigStore.ensureSupportDir()
-      try Self.materializeBundledAssets()
+    try ConfigStore.ensureSupportDir()
+    try Self.materializeBundledAssets()
 
-      guard let agentURL = Self.embeddedAgentURL() else {
-        throw SupervisorError.agentMissing
-      }
-
-      let proc = Process()
-      proc.executableURL = agentURL
-      proc.arguments = ["run"]
-      proc.currentDirectoryURL = ConfigStore.supportDir
-
-      var env = ProcessInfo.processInfo.environment
-      env["SENTINEL_BACKEND_URL"] = config.backendURL
-      env["SENTINEL_AGENT_CONFIG_DIR"] = ConfigStore.supportDir.path
-      env["SENTINEL_PACKAGE_DIR"] = config.packageDir
-      env["SENTINEL_PRIVILEGED_SOCKET"] = config.privilegedSocket
-      if let ca = ConfigStore.resolvedCaCert(config: config) {
-        env["SENTINEL_CA_CERT"] = ca
-      }
-      proc.environment = env
-
-      let out = try Self.appendHandle(ConfigStore.agentLogOut)
-      let err = try Self.appendHandle(ConfigStore.agentLogErr)
-      proc.standardOutput = out
-      proc.standardError = err
-
-      proc.terminationHandler = { [weak self] _ in
-        self?.queue.async {
-          self?.process = nil
-        }
-      }
-
-      try proc.run()
-      process = proc
+    guard let agentURL = Self.embeddedAgentURL() else {
+      throw SupervisorError.agentMissing
     }
+
+    // Reap outside the lock: sleep + process enumeration must not block isRunning.
+    Self.reapOrphanAgents(matching: agentURL)
+
+    lock.lock()
+    defer { lock.unlock() }
+    if process?.isRunning == true { return }
+
+    let proc = Process()
+    proc.executableURL = agentURL
+    proc.arguments = ["run"]
+    proc.currentDirectoryURL = ConfigStore.supportDir
+
+    var env = ProcessInfo.processInfo.environment
+    env["SENTINEL_BACKEND_URL"] = config.backendURL
+    env["SENTINEL_AGENT_CONFIG_DIR"] = ConfigStore.supportDir.path
+    env["SENTINEL_PACKAGE_DIR"] = config.packageDir
+    env["SENTINEL_PRIVILEGED_SOCKET"] = config.privilegedSocket
+    if let ca = ConfigStore.resolvedCaCert(config: config) {
+      env["SENTINEL_CA_CERT"] = ca
+    }
+    proc.environment = env
+
+    let out = try Self.appendHandle(ConfigStore.agentLogOut)
+    let err = try Self.appendHandle(ConfigStore.agentLogErr)
+    proc.standardOutput = out
+    proc.standardError = err
+
+    proc.terminationHandler = { [weak self] _ in
+      guard let self else { return }
+      self.lock.lock()
+      if self.process === proc {
+        self.process = nil
+      }
+      self.lock.unlock()
+    }
+
+    try proc.run()
+    process = proc
   }
 
   func stop() {
-    queue.sync {
-      guard let proc = process, proc.isRunning else {
-        process = nil
-        return
+    let proc: Process?
+    lock.lock()
+    proc = process
+    process = nil
+    lock.unlock()
+
+    guard let proc, proc.isRunning else { return }
+    proc.terminate()
+    DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+      if proc.isRunning {
+        proc.interrupt()
       }
-      proc.terminate()
-      // Give it a moment; avoid force-kill unless needed.
-      DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
-        if proc.isRunning {
-          proc.interrupt()
-        }
-      }
-      process = nil
     }
   }
 
   func restart(config: DesktopConfig) throws {
     stop()
-    // Brief pause so the previous process can release resources.
     Thread.sleep(forTimeInterval: 0.4)
     try start(config: config)
   }
@@ -84,6 +91,57 @@ final class AgentSupervisor {
       }
     }
     return Bundle.main.url(forResource: "sentinel-agent", withExtension: nil)
+  }
+
+  /// Terminate other live processes whose argv0 equals our bundled agent path.
+  private static func reapOrphanAgents(matching agentURL: URL) {
+    let target = agentURL.resolvingSymlinksInPath().path
+    let orphans = pids(withArgv0: target)
+    guard !orphans.isEmpty else { return }
+    for pid in orphans {
+      kill(pid_t(pid), SIGTERM)
+    }
+    Thread.sleep(forTimeInterval: 0.35)
+    for pid in pids(withArgv0: target) {
+      kill(pid_t(pid), SIGKILL)
+    }
+  }
+
+  private static func pids(withArgv0 target: String) -> [Int32] {
+    let selfPid = ProcessInfo.processInfo.processIdentifier
+    guard let raw = runCapture("/bin/ps", arguments: ["-axo", "pid=,args="]) else {
+      return []
+    }
+    var matches: [Int32] = []
+    for line in raw.split(whereSeparator: \.isNewline) {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      guard let space = trimmed.firstIndex(of: " ") else { continue }
+      let pidText = String(trimmed[..<space]).trimmingCharacters(in: .whitespaces)
+      guard let pid = Int32(pidText), pid > 0, pid != selfPid else { continue }
+      let args = String(trimmed[trimmed.index(after: space)...]).trimmingCharacters(in: .whitespaces)
+      if args == target || args.hasPrefix(target + " ") {
+        matches.append(pid)
+      }
+    }
+    return matches
+  }
+
+  private static func runCapture(_ launchPath: String, arguments: [String]) -> String? {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: launchPath)
+    task.arguments = arguments
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = FileHandle.nullDevice
+    do {
+      try task.run()
+    } catch {
+      return nil
+    }
+    // Read before waitUntilExit — a full pipe (~64KB) otherwise deadlocks `ps`.
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    task.waitUntilExit()
+    return String(data: data, encoding: .utf8)
   }
 
   private static func appendHandle(_ url: URL) throws -> FileHandle {
@@ -107,7 +165,6 @@ final class AgentSupervisor {
         ofItemAtPath: ConfigStore.jobPublicKeyURL.path
       )
     }
-    // Ensure shared package store exists (agent cache).
     let pkg = "/Users/Shared/SentinelDesk/packages"
     try? FileManager.default.createDirectory(
       atPath: pkg,

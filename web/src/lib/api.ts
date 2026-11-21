@@ -11,13 +11,27 @@ export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
   readonly correlationId: string | null;
+  readonly details: Record<string, unknown> | null;
 
-  constructor(code: string, message: string, status: number, correlationId: string | null) {
+  constructor(
+    code: string,
+    message: string,
+    status: number,
+    correlationId: string | null,
+    details: Record<string, unknown> | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
     this.correlationId = correlationId;
+    this.details = details;
+  }
+
+  /** A string field from `error.details`, if the backend sent one. */
+  detail(key: string): string | null {
+    const value = this.details?.[key];
+    return typeof value === "string" ? value : null;
   }
 }
 
@@ -45,7 +59,8 @@ function parseErrorBody(body: unknown, status: number, headerCorrelation: string
       typeof err["message"] === "string" ? err["message"] : UNEXPECTED_RESPONSE_MESSAGE;
     const correlation =
       typeof err["correlation_id"] === "string" ? err["correlation_id"] : headerCorrelation;
-    return new ApiError(code, message, status, correlation);
+    const details = isRecord(err["details"]) ? err["details"] : null;
+    return new ApiError(code, message, status, correlation, details);
   }
   return new ApiError(
     "UNEXPECTED_RESPONSE",
@@ -121,9 +136,35 @@ export function apiPost<T>(path: string, parse: Parser<T>, body?: unknown): Prom
   return request("POST", path, parse, { body });
 }
 
+export const parseEmpty: Parser<null> = () => null;
+
+export function apiDelete(path: string): Promise<null> {
+  return request("DELETE", path, parseEmpty);
+}
+
 /** Multipart POST (do not set Content-Type — browser supplies the boundary). */
-export async function apiFormPost<T>(path: string, parse: Parser<T>, form: FormData): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json" };
+export function apiFormPost<T>(path: string, parse: Parser<T>, form: FormData): Promise<T> {
+  return sendBody(path, parse, form, {});
+}
+
+/** POST a file as the raw request body (streamed by the server, no multipart parsing). */
+export function apiBlobPost<T>(
+  path: string,
+  parse: Parser<T>,
+  blob: Blob,
+  signal?: AbortSignal,
+): Promise<T> {
+  return sendBody(path, parse, blob, { "Content-Type": "application/octet-stream" }, signal);
+}
+
+async function sendBody<T>(
+  path: string,
+  parse: Parser<T>,
+  body: BodyInit,
+  extraHeaders: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json", ...extraHeaders };
   const csrf = readCsrfToken();
   if (csrf) headers["X-CSRF-Token"] = csrf;
 
@@ -133,7 +174,8 @@ export async function apiFormPost<T>(path: string, parse: Parser<T>, form: FormD
       method: "POST",
       credentials: "same-origin",
       headers,
-      body: form,
+      body,
+      ...(signal ? { signal } : {}),
     });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
@@ -141,10 +183,10 @@ export async function apiFormPost<T>(path: string, parse: Parser<T>, form: FormD
   }
 
   const correlationId = response.headers.get("x-correlation-id");
-  let body: unknown = undefined;
+  let parsed: unknown = undefined;
   if (response.status !== 204) {
     try {
-      body = await response.json();
+      parsed = await response.json();
     } catch {
       throw new ApiError(
         "UNEXPECTED_RESPONSE",
@@ -155,10 +197,10 @@ export async function apiFormPost<T>(path: string, parse: Parser<T>, form: FormD
     }
   }
 
-  if (!response.ok) throw parseErrorBody(body, response.status, correlationId);
+  if (!response.ok) throw parseErrorBody(parsed, response.status, correlationId);
 
   try {
-    return parse(body);
+    return parse(parsed);
   } catch {
     throw new ApiError(
       "UNEXPECTED_RESPONSE",
@@ -168,5 +210,3 @@ export async function apiFormPost<T>(path: string, parse: Parser<T>, form: FormD
     );
   }
 }
-
-export const parseEmpty: Parser<null> = () => null;

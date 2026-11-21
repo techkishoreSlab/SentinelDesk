@@ -23,6 +23,25 @@ _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _VERSION = re.compile(r"^[A-Za-z0-9._+\-]{1,40}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9._+\-]{1,200}$")
+TEAM_ID = re.compile(r"^[A-Z0-9]{10}$")
+# A single top-level bundle or package name inside a DMG / ZIP (no separators, no dot-files).
+PAYLOAD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+()\-]{0,195}\.(app|pkg)$")
+
+
+def check_team_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not TEAM_ID.fullmatch(value):
+        raise ValueError("expected_team_id must be 10 uppercase letters or digits")
+    return value
+
+
+def check_payload_path(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if ".." in value or not PAYLOAD_NAME.fullmatch(value):
+        raise ValueError("payload_path must be a single .app or .pkg name")
+    return value
 
 
 class AliasOut(BaseModel):
@@ -60,6 +79,8 @@ class VersionOut(BaseModel):
     signature_required: bool
     package_size_bytes: int | None
     release_status: str
+    expected_team_id: str | None = None
+    payload_path: str | None = None
     metadata_complete: bool
     created_at: datetime
 
@@ -107,6 +128,18 @@ class CreateVersion(BaseModel):
     signature_required: bool = True
     package_size_bytes: int | None = Field(default=None, ge=0, le=1 << 40)
     release_status: LifecycleStatus = LifecycleStatus.PENDING_REVIEW
+    expected_team_id: str | None = Field(default=None, max_length=10)
+    payload_path: str | None = Field(default=None, max_length=200)
+
+    @field_validator("expected_team_id")
+    @classmethod
+    def _team(cls, value: str | None) -> str | None:
+        return check_team_id(value)
+
+    @field_validator("payload_path")
+    @classmethod
+    def _payload(cls, value: str | None) -> str | None:
+        return check_payload_path(value)
 
     @field_validator("version")
     @classmethod
@@ -158,6 +191,18 @@ class PatchVersion(BaseModel):
     signature_required: bool | None = None
     package_size_bytes: int | None = Field(default=None, ge=0, le=1 << 40)
     release_status: LifecycleStatus | None = None
+    expected_team_id: str | None = Field(default=None, max_length=10)
+    payload_path: str | None = Field(default=None, max_length=200)
+
+    @field_validator("expected_team_id")
+    @classmethod
+    def _team(cls, value: str | None) -> str | None:
+        return check_team_id(value)
+
+    @field_validator("payload_path")
+    @classmethod
+    def _payload(cls, value: str | None) -> str | None:
+        return check_payload_path(value)
 
     @field_validator("sha256")
     @classmethod

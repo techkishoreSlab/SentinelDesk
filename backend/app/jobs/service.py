@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import service as audit
+from app.catalogue.compatibility import ARCHIVE_KINDS
 from app.catalogue.models import CatalogueSoftware, CatalogueVersion
 from app.core.config import Settings
 from app.core.errors import AppError
@@ -28,7 +29,7 @@ def build_envelope(
     version: CatalogueVersion,
     binding_hash: str,
 ) -> dict[str, Any]:
-    return {
+    envelope: dict[str, Any] = {
         "job_id": str(job.id),
         "device_id": str(job.device_id),
         "nonce": job.job_nonce,
@@ -50,6 +51,12 @@ def build_envelope(
         "verification_method": version.verification_method,
         "package_size_bytes": version.package_size_bytes,
     }
+    # Only archive kinds carry these keys, so flat .pkg envelopes stay byte-identical and
+    # older agents (strict about unknown fields) keep parsing them.
+    if version.installer_type in ARCHIVE_KINDS:
+        envelope["expected_team_id"] = version.expected_team_id
+        envelope["payload_path"] = version.payload_path
+    return envelope
 
 
 async def claim_next_job(
@@ -150,6 +157,74 @@ async def mark_started(
     await db.flush()
 
 
+_PROGRESS_ACTIVE = frozenset({JobStatus.DISPATCHED.value, JobStatus.RUNNING.value})
+_PROGRESS_MIN_GAP = timedelta(milliseconds=400)
+
+
+async def record_progress(
+    db: AsyncSession,
+    *,
+    device_id: uuid.UUID,
+    job_id: uuid.UUID,
+    phase: str,
+    bytes_done: int | None,
+    bytes_total: int | None,
+) -> dict[str, Any]:
+    """Persist agent mid-job progress. Does not change request status."""
+    job = await db.scalar(
+        select(InstallationJob)
+        .where(InstallationJob.id == job_id, InstallationJob.device_id == device_id)
+        .with_for_update()
+    )
+    if job is None:
+        raise AppError("NOT_FOUND", 404)
+    if job.status not in _PROGRESS_ACTIVE:
+        raise AppError("CONFLICT", 409, {"status": job.status})
+    if job.expires_at <= datetime.now(UTC):
+        job.status = JobStatus.EXPIRED.value
+        raise AppError("REQUEST_EXPIRED", 409)
+
+    now = datetime.now(UTC)
+    if (
+        job.progress_updated_at is not None
+        and now - job.progress_updated_at < _PROGRESS_MIN_GAP
+        and job.progress_phase == phase
+    ):
+        # Throttle chatty agents; still ack with last stored values.
+        return {
+            "status": job.status,
+            "phase": job.progress_phase or phase,
+            "bytes_done": job.progress_bytes_done,
+            "bytes_total": job.progress_bytes_total,
+        }
+
+    done = bytes_done
+    total = bytes_total
+    if phase == "DOWNLOADING":
+        if done is None:
+            done = 0
+        if job.progress_bytes_done is not None and done < job.progress_bytes_done:
+            done = job.progress_bytes_done  # monotonic clamp
+        if total is not None and done > total:
+            done = total
+    else:
+        # Install/verify: clear byte counters so the UI does not keep a stale download %.
+        done = None
+        total = None
+
+    job.progress_phase = phase
+    job.progress_bytes_done = done
+    job.progress_bytes_total = total
+    job.progress_updated_at = now
+    await db.flush()
+    return {
+        "status": job.status,
+        "phase": phase,
+        "bytes_done": done,
+        "bytes_total": total,
+    }
+
+
 async def submit_result(
     db: AsyncSession,
     *,
@@ -216,6 +291,9 @@ async def submit_result(
     request = await db.get(SoftwareRequest, job.request_id)
     if request is not None:
         request.status = request_status
+        if request_status == RequestStatus.FAILED.value:
+            # Surfaced to the employee as friendly copy (APP_IN_USE, DOWNGRADE_REFUSED, ...).
+            request.decision_reason = job.result_code
         request.version += 1
 
     await audit.record(

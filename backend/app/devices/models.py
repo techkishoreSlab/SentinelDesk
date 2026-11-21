@@ -36,6 +36,9 @@ class Device(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     policy_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Installer kinds this endpoint (agent + privileged daemon) reported. NULL = legacy agent,
+    # which only supports MACOS_PKG.
+    supported_installers: Mapped[list[str] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 

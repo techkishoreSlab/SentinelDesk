@@ -26,7 +26,7 @@ async def test_migrations_at_head_with_roles_seeded(owner_engine: AsyncEngine) -
         ext = (
             await conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'pgcrypto'"))
         ).scalar()
-    assert version == "0004"
+    assert version == "0005"
     assert ext == 1
     assert roles == [
         "APPROVER",

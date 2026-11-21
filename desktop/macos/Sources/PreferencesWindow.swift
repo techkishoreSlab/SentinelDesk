@@ -16,12 +16,15 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
 
   convenience init() {
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 520, height: 620),
+      contentRect: NSRect(x: 0, y: 0, width: 540, height: 660),
       styleMask: [.titled, .closable],
       backing: .buffered,
       defer: false
     )
     window.title = "Sentinel Preferences"
+    // Match Theme.surface: system dark appearance paints checkbox/button titles white.
+    window.appearance = NSAppearance(named: .aqua)
+    window.backgroundColor = Theme.surface
     window.center()
     window.isReleasedWhenClosed = false
     self.init(window: window)
@@ -31,14 +34,15 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
   }
 
   private func buildContent() -> NSView {
-    let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 620))
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 540, height: 660))
     root.wantsLayer = true
     root.layer?.backgroundColor = Theme.surface.cgColor
+    root.appearance = NSAppearance(named: .aqua)
 
     let stack = NSStackView()
     stack.orientation = .vertical
     stack.alignment = .leading
-    stack.spacing = 10
+    stack.spacing = 12
     stack.translatesAutoresizingMaskIntoConstraints = false
     root.addSubview(stack)
 
@@ -47,17 +51,14 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
     caField = field()
     packageField = field()
     repoField = field()
-    startOnLaunch = NSButton(checkboxWithTitle: "Start local agent when Sentinel opens", target: nil, action: nil)
-    manageStack = NSButton(
-      checkboxWithTitle: "Local demo stack: start Docker Compose when app opens",
-      target: nil,
-      action: nil
-    )
-    startWeb = NSButton(checkboxWithTitle: "Also start web UI (npm run dev)", target: nil, action: nil)
-    openConsole = NSButton(checkboxWithTitle: "Open web console in browser on launch", target: nil, action: nil)
-    stopOnQuit = NSButton(checkboxWithTitle: "Stop Docker Compose when quitting Sentinel", target: nil, action: nil)
 
-    stack.addArrangedSubview(label("Connection", size: 16, weight: .bold, color: Theme.ink))
+    startOnLaunch = checkbox("Start local agent when Sentinel opens")
+    manageStack = checkbox("Start Docker Compose when Sentinel opens")
+    startWeb = checkbox("Also start web UI (npm run dev)")
+    openConsole = checkbox("Open web console in browser on launch")
+    stopOnQuit = checkbox("Stop Docker Compose when quitting Sentinel")
+
+    stack.addArrangedSubview(label("Connection", size: 17, weight: .bold, color: Theme.ink))
     stack.addArrangedSubview(label(
       "Production SaaS: point these URLs at your hosted control plane. The desktop app only runs the Mac agent.",
       size: 12,
@@ -70,7 +71,9 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
     stack.addArrangedSubview(labeled("Package store directory", packageField))
     stack.addArrangedSubview(startOnLaunch)
 
-    stack.addArrangedSubview(label("Local demo stack (this Mac only)", size: 16, weight: .bold, color: Theme.ink))
+    stack.addArrangedSubview(hairline())
+
+    stack.addArrangedSubview(label("Local demo stack (this Mac only)", size: 17, weight: .bold, color: Theme.ink))
     stack.addArrangedSubview(label(
       "For a single-machine demo: open Sentinel → containers + agent; Quit → stop agent and optionally Docker. Shared client builds should leave this off.",
       size: 12,
@@ -83,27 +86,32 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
     stack.addArrangedSubview(openConsole)
     stack.addArrangedSubview(stopOnQuit)
 
-    messageLabel = label("", size: 12, weight: .medium, color: Theme.ok)
+    messageLabel = label("", size: 12, weight: .semibold, color: Theme.ok)
     messageLabel.isHidden = true
     stack.addArrangedSubview(messageLabel)
 
     let actions = NSStackView()
     actions.orientation = .horizontal
-    actions.spacing = 8
+    actions.spacing = 10
     actions.addArrangedSubview(button("Save", accent: true) { [weak self] in self?.save() })
     actions.addArrangedSubview(button("Close", accent: false) { [weak self] in self?.window?.close() })
     stack.addArrangedSubview(actions)
 
     NSLayoutConstraint.activate([
-      stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
-      stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
-      stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
-      stack.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -20),
+      stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
+      stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -28),
+      stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 24),
+      stack.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -24),
       backendField.widthAnchor.constraint(equalTo: stack.widthAnchor),
       webField.widthAnchor.constraint(equalTo: stack.widthAnchor),
       caField.widthAnchor.constraint(equalTo: stack.widthAnchor),
       packageField.widthAnchor.constraint(equalTo: stack.widthAnchor),
       repoField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      startOnLaunch.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      manageStack.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      startWeb.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      openConsole.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      stopOnQuit.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
     return root
   }
@@ -174,15 +182,21 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
     t.textColor = color
     t.lineBreakMode = .byWordWrapping
     t.maximumNumberOfLines = 4
+    t.drawsBackground = false
+    t.isBezeled = false
     return t
   }
 
   private func field() -> NSTextField {
     let f = NSTextField(string: "")
-    f.font = .systemFont(ofSize: 13)
+    f.font = .systemFont(ofSize: 13, weight: .regular)
     f.isEditable = true
     f.isBezeled = true
     f.bezelStyle = .roundedBezel
+    f.textColor = Theme.ink
+    f.backgroundColor = NSColor.white
+    f.drawsBackground = true
+    f.focusRingType = .default
     return f
   }
 
@@ -190,16 +204,59 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
     let stack = NSStackView()
     stack.orientation = .vertical
     stack.alignment = .leading
-    stack.spacing = 4
+    stack.spacing = 5
     stack.addArrangedSubview(label(title, size: 11, weight: .semibold, color: Theme.muted))
     stack.addArrangedSubview(field)
     return stack
+  }
+
+  private func checkbox(_ title: String) -> NSButton {
+    let b = NSButton(checkboxWithTitle: title, target: nil, action: nil)
+    b.font = .systemFont(ofSize: 13, weight: .regular)
+    b.contentTintColor = Theme.accent
+    b.attributedTitle = NSAttributedString(
+      string: title,
+      attributes: [
+        .foregroundColor: Theme.ink,
+        .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+      ]
+    )
+    return b
+  }
+
+  private func hairline() -> NSView {
+    let box = NSBox()
+    box.boxType = .separator
+    box.translatesAutoresizingMaskIntoConstraints = false
+    box.heightAnchor.constraint(equalToConstant: 1).isActive = true
+    return box
   }
 
   private func button(_ title: String, accent: Bool, action: @escaping () -> Void) -> NSButton {
     let b = NSButton(title: title, target: nil, action: nil)
     b.bezelStyle = .rounded
     b.setButtonType(.momentaryPushIn)
+    b.font = .systemFont(ofSize: 13, weight: .semibold)
+    if accent {
+      b.bezelColor = Theme.accent
+      b.contentTintColor = .white
+      b.attributedTitle = NSAttributedString(
+        string: title,
+        attributes: [
+          .foregroundColor: NSColor.white,
+          .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+        ]
+      )
+    } else {
+      b.contentTintColor = Theme.ink
+      b.attributedTitle = NSAttributedString(
+        string: title,
+        attributes: [
+          .foregroundColor: Theme.ink,
+          .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+        ]
+      )
+    }
     b.target = ClosureTarget.retain(action)
     b.action = #selector(ClosureTarget.invoke)
     return b

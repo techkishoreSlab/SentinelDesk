@@ -117,13 +117,10 @@ async def run_preview(
     intent_payload = _intent_out(intent, source)
 
     if intent.intent != "INSTALL_SOFTWARE":
-        msg = (
-            intent.clarification_question
-            or (
-                "I'm Sentinel, your organisation's software provisioning agent. "
-                "I help install approved software on your enrolled devices. "
-                "How may I help you today?"
-            )
+        msg = intent.clarification_question or (
+            "I'm Sentinel, your organisation's software provisioning agent. "
+            "I help install approved software on your enrolled devices. "
+            "How may I help you today?"
         )
         return PreviewOut(
             status="UNKNOWN_INTENT",

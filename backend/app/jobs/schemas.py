@@ -19,6 +19,24 @@ class JobStartedIn(BaseModel):
     protocol_version: Literal[1] = 1
 
 
+class JobProgressIn(BaseModel):
+    """Mid-job progress from the endpoint agent (download bytes / install phase)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: Literal[1] = 1
+    phase: Literal["DOWNLOADING", "INSTALLING", "VERIFYING"]
+    bytes_done: int | None = Field(default=None, ge=0, le=8 * 1024 * 1024 * 1024)
+    bytes_total: int | None = Field(default=None, ge=0, le=8 * 1024 * 1024 * 1024)
+
+
+class JobProgressOut(BaseModel):
+    status: str
+    phase: str
+    bytes_done: int | None = None
+    bytes_total: int | None = None
+
+
 class JobResultIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

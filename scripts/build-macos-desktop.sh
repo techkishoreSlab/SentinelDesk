@@ -14,6 +14,11 @@ RES_DIR="${APP}/Contents/Resources"
 VERSION="0.1.2"
 
 export PATH="${HOME}/.cargo/bin:${PATH}"
+# Cursor/CI sandboxes often set CARGO_TARGET_DIR elsewhere; always build into the
+# path we copy from so we never ship a stale endpoint/target/release binary.
+AGENT_TARGET_DIR="${ROOT}/endpoint/target"
+AGENT_BIN="${AGENT_TARGET_DIR}/release/sentinel-agent"
+unset CARGO_TARGET_DIR
 
 if ! command -v swiftc >/dev/null 2>&1; then
   echo "swiftc not found — install Xcode Command Line Tools." >&2
@@ -21,7 +26,27 @@ if ! command -v swiftc >/dev/null 2>&1; then
 fi
 
 echo "==> Building sentinel-agent (release)"
-(cd "${ROOT}/endpoint" && cargo build --release -p sentinel-agent)
+(cd "${ROOT}/endpoint" && cargo build --release -p sentinel-agent --target-dir "${AGENT_TARGET_DIR}")
+
+if [[ ! -x "${AGENT_BIN}" ]]; then
+  echo "error: missing agent binary at ${AGENT_BIN}" >&2
+  exit 1
+fi
+# Guard against packaging an old agent that cannot advertise archive installers.
+# Use Python (not `strings|grep -q`) so `set -o pipefail` cannot false-fail on SIGPIPE.
+if ! python3 - "${AGENT_BIN}" <<'PY'
+import sys
+from pathlib import Path
+blob = Path(sys.argv[1]).read_bytes()
+missing = [s for s in (b"MACOS_DMG_APP", b"installer_capabilities") if s not in blob]
+if missing:
+    print("missing:", ", ".join(m.decode() for m in missing), file=sys.stderr)
+    sys.exit(1)
+PY
+then
+  echo "error: ${AGENT_BIN} looks stale (missing DMG capability markers) — refusing to package" >&2
+  exit 1
+fi
 
 echo "==> Compiling Sentinel desktop UI"
 rm -rf "${BUILD}"
@@ -30,7 +55,7 @@ mkdir -p "${DIST}" "${MACOS_DIR}" "${RES_DIR}"
 swiftc -O \
   -target "$(uname -m)-apple-macosx12.0" \
   -sdk "$(xcrun --show-sdk-path)" \
-  -framework AppKit -framework Foundation \
+  -framework AppKit -framework Foundation -framework QuartzCore \
   -o "${MACOS_DIR}/Sentinel" \
   $(printf '%s\n' "${SRC}"/*.swift | sort)
 
@@ -45,7 +70,7 @@ rm -rf "${ICON_WORK}"
 
 echo "==> Assembling app bundle"
 cp -f "${RES}/Info.plist" "${APP}/Contents/Info.plist"
-cp -f "${ROOT}/endpoint/target/release/sentinel-agent" "${MACOS_DIR}/sentinel-agent"
+cp -f "${AGENT_BIN}" "${MACOS_DIR}/sentinel-agent"
 chmod 755 "${MACOS_DIR}/Sentinel" "${MACOS_DIR}/sentinel-agent"
 
 if [[ -f "${ROOT}/dev-certs/ca.pem" ]]; then

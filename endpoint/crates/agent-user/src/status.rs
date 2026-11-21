@@ -24,7 +24,12 @@ pub fn status_path(config_dir: &Path) -> PathBuf {
     config_dir.join("status.json")
 }
 
-pub fn write_status(config_dir: &Path, state: &'static str, detail: impl Into<String>, device_id: Option<&str>) {
+pub fn write_status(
+    config_dir: &Path,
+    state: &'static str,
+    detail: impl Into<String>,
+    device_id: Option<&str>,
+) {
     let payload = AgentStatus {
         state,
         detail: detail.into(),

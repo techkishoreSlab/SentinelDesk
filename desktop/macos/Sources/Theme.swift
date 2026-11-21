@@ -9,9 +9,21 @@ enum Theme {
   static let surface = NSColor(calibratedRed: 0.98, green: 0.98, blue: 0.97, alpha: 1)
   static let ok = NSColor(calibratedRed: 0.15, green: 0.48, blue: 0.36, alpha: 1)
   static let warn = NSColor(calibratedRed: 0.72, green: 0.52, blue: 0.18, alpha: 1)
+  static let connecting = NSColor(calibratedRed: 0.78, green: 0.55, blue: 0.16, alpha: 1)
   static let bad = NSColor(calibratedRed: 0.72, green: 0.22, blue: 0.22, alpha: 1)
   static let line = NSColor(calibratedRed: 0.86, green: 0.88, blue: 0.90, alpha: 1)
 
+  static func statusColor(_ state: PresenceState) -> NSColor {
+    switch state {
+    case .online: return ok
+    case .installing: return accent
+    case .connecting: return connecting
+    case .issue: return bad
+    case .off: return muted
+    }
+  }
+
+  /// Legacy mapping for raw agent snapshots (tests / internals).
   static func statusColor(_ state: AgentStatusSnapshot.State) -> NSColor {
     switch state {
     case .online: return ok

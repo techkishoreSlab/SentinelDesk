@@ -10,15 +10,15 @@ use std::time::{Duration, Instant};
 
 use sentinel_protocol::PROTOCOL_VERSION;
 use sentinel_protocol::agent::{
-    ENROLLMENT_PREFIX, EnrollRequest, EnrollResponse, HeartbeatRequest, HeartbeatResponse,
-    RotateResponse, well_formed_secret,
+    DeviceCapabilities, ENROLLMENT_PREFIX, EnrollRequest, EnrollResponse, HeartbeatRequest,
+    HeartbeatResponse, RotateResponse, well_formed_secret,
 };
 
 use crate::backend_url::{BackendOrigin, UrlError};
 use crate::credstore::{CredentialStore, StoreError};
 use crate::facts::{self, FactsError};
 use crate::http::{Client, HttpError};
-use crate::jobs::{JobPaths, JobRunner};
+use crate::jobs::{JobPaths, JobRunner, fail_interrupted_job, probe_installers};
 use crate::log;
 use crate::state::{AgentState, StateError, StoreKind};
 
@@ -26,6 +26,8 @@ pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 const BASE_BACKOFF: Duration = Duration::from_secs(5);
 const SLEEP_SLICE: Duration = Duration::from_millis(250);
+/// A healthy capability answer is re-checked hourly; a fallback answer every heartbeat.
+const CAPABILITIES_TTL: Duration = Duration::from_secs(3600);
 
 #[derive(Debug)]
 pub enum AgentError {
@@ -44,6 +46,7 @@ pub enum AgentError {
     DigestMismatch,
     DownloadFailed,
     PrivilegedUnavailable,
+    InstallerUnsupported,
 }
 
 impl std::fmt::Display for AgentError {
@@ -70,6 +73,9 @@ impl std::fmt::Display for AgentError {
             Self::DownloadFailed => write!(f, "package download failed"),
             Self::PrivilegedUnavailable => {
                 write!(f, "privileged install service is unavailable")
+            }
+            Self::InstallerUnsupported => {
+                write!(f, "this agent cannot run the job's installer type")
             }
         }
     }
@@ -124,6 +130,7 @@ pub struct Session {
     pub state: AgentState,
     pub(crate) store: CredentialStore,
     pub(crate) client: Client,
+    capabilities: Option<(Instant, DeviceCapabilities)>,
 }
 
 impl Session {
@@ -137,7 +144,26 @@ impl Session {
             state,
             store,
             client,
+            capabilities: None,
         })
+    }
+
+    fn capabilities(&mut self) -> DeviceCapabilities {
+        if let Some((at, caps)) = &self.capabilities
+            && at.elapsed() < CAPABILITIES_TTL
+            && caps.installers.len() > 1
+        {
+            return caps.clone();
+        }
+        let caps = probe_capabilities(&self.config_dir);
+        if self.capabilities.as_ref().map(|(_, c)| c) != Some(&caps) {
+            log::info(
+                "installer_capabilities",
+                serde_json::json!({ "installers": caps.installers }),
+            );
+        }
+        self.capabilities = Some((Instant::now(), caps.clone()));
+        caps
     }
 
     pub fn credential_present(&self) -> Result<bool, AgentError> {
@@ -151,10 +177,12 @@ impl Session {
     pub fn heartbeat(&mut self) -> Result<HeartbeatResponse, AgentError> {
         let credential = self.store.load(&self.state.device_id)?;
         let facts = facts::collect()?;
+        let capabilities = self.capabilities();
         let body = HeartbeatRequest {
             protocol_version: PROTOCOL_VERSION,
             agent_version: AGENT_VERSION,
             facts: &facts,
+            capabilities: Some(&capabilities),
         };
         let response =
             self.client
@@ -243,11 +271,13 @@ pub fn enroll(opts: &EnrollOptions<'_>, token: &str) -> Result<AgentState, Agent
     let client = Client::new(origin.clone(), ca_file.as_deref())?;
     let store = CredentialStore::new(opts.store, opts.config_dir)?;
     let facts = facts::collect()?;
+    let capabilities = probe_capabilities(opts.config_dir);
     let body = EnrollRequest {
         protocol_version: PROTOCOL_VERSION,
         enrollment_token: token,
         agent_version: AGENT_VERSION,
         facts: &facts,
+        capabilities: Some(&capabilities),
     };
     let response = client.post_json("/api/v1/agent/enroll", None, &body)?;
     let enrolled = EnrollResponse::parse(&response.body)?;
@@ -276,6 +306,13 @@ pub fn enroll(opts: &EnrollOptions<'_>, token: &str) -> Result<AgentState, Agent
         );
     }
     Ok(state)
+}
+
+fn probe_capabilities(config_dir: &Path) -> DeviceCapabilities {
+    let paths = JobPaths::from_env(config_dir);
+    DeviceCapabilities {
+        installers: probe_installers(&paths.privileged_socket),
+    }
 }
 
 /// Uniform random fraction in [0, 1). Falls back to 0.5 if the OS RNG is unavailable, which
@@ -317,6 +354,8 @@ pub enum RunOutcome {
 pub fn run(mut session: Session, stop: &Arc<AtomicBool>, max_cycles: Option<u64>) -> RunOutcome {
     let config_dir = session.config_dir.clone();
     let device_id = session.state.device_id.clone();
+    // Close jobs left RUNNING if a previous agent process died mid-install.
+    fail_interrupted_job(&session);
     crate::status::write_status(
         &config_dir,
         "online",

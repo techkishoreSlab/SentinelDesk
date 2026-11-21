@@ -22,10 +22,11 @@ struct AgentStatusSnapshot: Equatable {
     updatedAtUnix: nil
   )
 
+  /// Raw labels for debugging. Presentation UX uses `PresenceController`.
   var menuTitle: String {
     switch state {
     case .installing: return "Installing…"
-    case .degraded: return "Issue"
+    case .degraded: return "Degraded"
     case .error, .stopped, .offline: return "Off"
     case .online: return "Online"
     }
@@ -34,7 +35,7 @@ struct AgentStatusSnapshot: Equatable {
   var headline: String {
     switch state {
     case .installing: return "Installing software"
-    case .degraded: return "Needs attention"
+    case .degraded: return "Degraded"
     case .error, .stopped, .offline: return "Offline"
     case .online: return "Online"
     }

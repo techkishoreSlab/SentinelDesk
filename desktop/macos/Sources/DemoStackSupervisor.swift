@@ -30,19 +30,30 @@ final class DemoStackSupervisor {
           atPath: config.packageDir,
           withIntermediateDirectories: true
         )
-        self.appendLog("Starting Docker Compose in \(root.path)")
-        // Reopen path: no --build (avoids credential-helper / bake issues). Rebuild only if up fails.
-        do {
-          try self.runDockerCompose(
-            root: root,
-            args: ["up", "-d", "--wait", "backend", "agent-gateway"]
-          )
-        } catch {
-          self.appendLog("compose up failed; retrying with --build")
-          try self.runDockerCompose(
-            root: root,
-            args: ["up", "-d", "--build", "--wait", "backend", "agent-gateway"]
-          )
+        // Fast path: if loopback is already healthy, skip `compose up` entirely.
+        // With an app-local DOCKER_CONFIG, `compose up -d` can hang for minutes
+        // even when backend/agent-gateway are already Running/Healthy.
+        if self.waitForLocalControlPlane(timeoutSeconds: 3) {
+          self.appendLog("control plane already ready — skipping compose up")
+        } else {
+          self.appendLog("Starting Docker Compose in \(root.path)")
+          do {
+            try self.runDockerCompose(
+              root: root,
+              args: ["up", "-d", "backend", "agent-gateway"],
+              timeoutSeconds: 120
+            )
+          } catch {
+            self.appendLog("compose up failed; retrying once")
+            try self.runDockerCompose(
+              root: root,
+              args: ["up", "-d", "backend", "agent-gateway"],
+              timeoutSeconds: 120
+            )
+          }
+          if !self.waitForLocalControlPlane(timeoutSeconds: 90) {
+            self.appendLog("control plane health poll timed out; starting agent anyway")
+          }
         }
         self.isComposeUp = true
         self.lastMessage = "Local stack running"
@@ -131,7 +142,7 @@ final class DemoStackSupervisor {
     try? fm.createSymbolicLink(atPath: link.path, withDestinationPath: target)
   }
 
-  private func runDockerCompose(root: URL, args: [String]) throws {
+  private func runDockerCompose(root: URL, args: [String], timeoutSeconds: Int = 300) throws {
     guard let docker = Self.findBinary(named: "docker", extras: Self.dockerBinDirs.map { "\($0)/docker" })
     else {
       throw StackError.dockerMissing
@@ -145,10 +156,69 @@ final class DemoStackSupervisor {
     proc.standardOutput = log
     proc.standardError = log
     try proc.run()
-    proc.waitUntilExit()
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    while proc.isRunning, Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.4)
+    }
+    if proc.isRunning {
+      proc.terminate()
+      Thread.sleep(forTimeInterval: 0.5)
+      if proc.isRunning { proc.interrupt() }
+      appendLog("compose timed out after \(timeoutSeconds)s — killed")
+      throw StackError.composeFailed(124)
+    }
     if proc.terminationStatus != 0 {
       throw StackError.composeFailed(proc.terminationStatus)
     }
+  }
+
+  /// Poll browser (:8000) and agent TLS (:8443) readiness without `compose --wait`.
+  private func waitForLocalControlPlane(timeoutSeconds: Int) -> Bool {
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    while Date() < deadline {
+      if isHTTPReady(url: "http://127.0.0.1:8000/health/ready")
+        && isHTTPSReady(url: "https://127.0.0.1:8443/health/ready")
+      {
+        appendLog("control plane ready (backend + agent-gateway)")
+        return true
+      }
+      Thread.sleep(forTimeInterval: 1.0)
+    }
+    return false
+  }
+
+  private func isHTTPReady(url: String) -> Bool {
+    guard let u = URL(string: url) else { return false }
+    var ok = false
+    let sem = DispatchSemaphore(value: 0)
+    let task = URLSession.shared.dataTask(with: u) { _, response, _ in
+      if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+        ok = true
+      }
+      sem.signal()
+    }
+    task.resume()
+    _ = sem.wait(timeout: .now() + 2)
+    return ok
+  }
+
+  private func isHTTPSReady(url: String) -> Bool {
+    guard let u = URL(string: url) else { return false }
+    var ok = false
+    let sem = DispatchSemaphore(value: 0)
+    let task = URLSession(
+      configuration: .ephemeral,
+      delegate: InsecureDevTLSDelegate.shared,
+      delegateQueue: nil
+    ).dataTask(with: u) { _, response, _ in
+      if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+        ok = true
+      }
+      sem.signal()
+    }
+    task.resume()
+    _ = sem.wait(timeout: .now() + 2)
+    return ok
   }
 
   /// Start Vite only if nothing is already serving :5173. Never fail the stack for web.
@@ -254,6 +324,11 @@ final class DemoStackSupervisor {
     return handle
   }
 
+  /// Visible to AppDelegate so agent start/fail is correlated with stack.log.
+  func appendLaunchNote(_ line: String) {
+    appendLog(line)
+  }
+
   private func appendLog(_ line: String) {
     let stamp = ISO8601DateFormatter().string(from: Date())
     let text = "[\(stamp)] \(line)\n"
@@ -290,5 +365,26 @@ private enum StackError: LocalizedError {
     case .npmMissing:
       return "npm not found on PATH. Start the web UI manually or install Node."
     }
+  }
+}
+
+/// Dev-only TLS trust for loopback agent-gateway health checks (pinned CA is used by the agent).
+private final class InsecureDevTLSDelegate: NSObject, URLSessionDelegate {
+  static let shared = InsecureDevTLSDelegate()
+
+  func urlSession(
+    _ session: URLSession,
+    didReceive challenge: URLAuthenticationChallenge,
+    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+  ) {
+    if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+       let trust = challenge.protectionSpace.serverTrust,
+       challenge.protectionSpace.host == "127.0.0.1"
+        || challenge.protectionSpace.host == "localhost"
+    {
+      completionHandler(.useCredential, URLCredential(trust: trust))
+      return
+    }
+    completionHandler(.performDefaultHandling, nil)
   }
 }

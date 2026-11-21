@@ -113,7 +113,7 @@ class BodySizeLimitMiddleware:
 
     def _limit_for(self, scope: Scope) -> int:
         path = scope.get("path", "")
-        if path.endswith("/admin/catalogue/ingest"):
+        if path.endswith(("/admin/catalogue/ingest", "/admin/catalogue/inspect/upload")):
             return self.upload_max_bytes
         return self.max_bytes
 

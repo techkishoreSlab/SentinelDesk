@@ -8,10 +8,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.catalogue.versions import meets_minimum
-from app.db.enums import DeviceStatus, LifecycleStatus
+if TYPE_CHECKING:
+    from app.devices.models import Device, DeviceFacts
+
+from app.catalogue.versions import meets_minimum, parse_version
+from app.db.enums import DeviceStatus, InstallerType, LifecycleStatus
+
+ARCHIVE_KINDS = frozenset(
+    {
+        InstallerType.MACOS_DMG_APP.value,
+        InstallerType.MACOS_DMG_PKG.value,
+        InstallerType.MACOS_ZIP_APP.value,
+    }
+)
+# Agents that predate capability reporting only install flat .pkg files.
+LEGACY_INSTALLERS: tuple[str, ...] = (InstallerType.MACOS_PKG.value,)
 
 # Ordered evaluation codes from spec §8.2.
 REASON_DEVICE_NOT_ENROLLED = "DEVICE_NOT_ENROLLED"
@@ -25,7 +38,11 @@ REASON_INSUFFICIENT_DISK = "INSUFFICIENT_DISK"
 REASON_PACKAGE_NOT_APPROVED = "PACKAGE_NOT_APPROVED"
 REASON_PACKAGE_METADATA_INCOMPLETE = "PACKAGE_METADATA_INCOMPLETE"
 REASON_ALREADY_INSTALLED = "ALREADY_INSTALLED"
+REASON_NEWER_VERSION_INSTALLED = "NEWER_VERSION_INSTALLED"
+REASON_INSTALLER_UNSUPPORTED = "INSTALLER_UNSUPPORTED"
 REASON_COMPATIBLE = "COMPATIBLE"
+# Non-blocking outcomes: the device already satisfies the request, so no job is created.
+SATISFIED_REASONS = frozenset({REASON_ALREADY_INSTALLED, REASON_NEWER_VERSION_INSTALLED})
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +58,8 @@ class DeviceSnapshot:
     memory_total_bytes: int | None
     disk_free_bytes: int | None
     installed_software: list[dict[str, Any]] = field(default_factory=list)
+    # None means a legacy agent that never reported capabilities.
+    supported_installers: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +80,8 @@ class PackageSnapshot:
     verification_method: str | None
     package_identifier: str | None
     version: str
+    expected_team_id: str | None = None
+    payload_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +110,8 @@ def mandatory_fields_complete(package: PackageSnapshot) -> bool:
         package.package_identifier,
         package.version,
     ]
+    if package.installer_type in ARCHIVE_KINDS:
+        required.extend([package.expected_team_id, package.payload_path])
     if any(v is None or v == "" for v in required):
         return False
     if package.minimum_memory_bytes is None or package.minimum_disk_bytes is None:
@@ -96,18 +119,73 @@ def mandatory_fields_complete(package: PackageSnapshot) -> bool:
     return not (package.signature_required and not package.signature_publisher)
 
 
-def _installed_match(package: PackageSnapshot, installed: list[dict[str, Any]]) -> bool:
+def _installed_versions(package: PackageSnapshot, installed: list[dict[str, Any]]) -> list[str]:
     if not package.package_identifier:
-        return False
+        return []
     target = package.package_identifier.casefold()
+    out: list[str] = []
     for item in installed:
         identifier = item.get("identifier")
         version = item.get("version")
         if not isinstance(identifier, str) or not isinstance(version, str):
             continue
-        if identifier.casefold() == target and version == package.version:
-            return True
-    return False
+        if identifier.casefold() == target:
+            out.append(version)
+    return out
+
+
+def _installed_match(package: PackageSnapshot, installed: list[dict[str, Any]]) -> bool:
+    return package.version in _installed_versions(package, installed)
+
+
+def _newer_installed(package: PackageSnapshot, installed: list[dict[str, Any]]) -> str | None:
+    """Highest installed version strictly newer than the catalogue version, if comparable."""
+    wanted = parse_version(package.version)
+    if wanted is None:
+        return None
+    best: tuple[tuple[int, ...], str] | None = None
+    for raw in _installed_versions(package, installed):
+        have = parse_version(raw)
+        if have is None:
+            continue
+        width = max(len(have), len(wanted))
+        if have + (0,) * (width - len(have)) > wanted + (0,) * (width - len(wanted)) and (
+            best is None or have > best[0]
+        ):
+            best = (have, raw)
+    return best[1] if best else None
+
+
+def device_snapshot_from(device: Device, facts: DeviceFacts | None) -> DeviceSnapshot:
+    installed: list[dict[str, Any]] = []
+    if facts is not None and isinstance(facts.installed_software_summary, dict):
+        raw = facts.installed_software_summary.get("items", [])
+        if isinstance(raw, list):
+            installed = [i for i in raw if isinstance(i, dict)]
+    supported: tuple[str, ...] | None = None
+    if isinstance(device.supported_installers, list):
+        supported = tuple(i for i in device.supported_installers if isinstance(i, str))
+    return DeviceSnapshot(
+        enrolled=True,
+        status=device.device_status,
+        last_seen_at=device.last_seen_at,
+        os_family=device.os_family,
+        os_version=device.os_version,
+        architecture=device.architecture,
+        memory_total_bytes=facts.memory_total_bytes if facts else None,
+        disk_free_bytes=facts.disk_free_bytes if facts else None,
+        installed_software=installed,
+        supported_installers=supported,
+    )
+
+
+def device_supports(device: DeviceSnapshot, installer_type: str | None) -> bool:
+    supported = (
+        device.supported_installers
+        if device.supported_installers is not None
+        else LEGACY_INSTALLERS
+    )
+    return bool(installer_type) and installer_type in supported
 
 
 def evaluate(
@@ -191,6 +269,26 @@ def evaluate(
             False,
             REASON_ALREADY_INSTALLED,
             {"package_identifier": package.package_identifier, "version": package.version},
+        )
+
+    newer = _newer_installed(package, device.installed_software)
+    if newer is not None:
+        # Self-updating apps (Chrome, Slack, …) move ahead of the catalogue; never downgrade.
+        return CompatibilityResult(
+            False,
+            REASON_NEWER_VERSION_INSTALLED,
+            {
+                "package_identifier": package.package_identifier,
+                "version": package.version,
+                "installed_version": newer,
+            },
+        )
+
+    if not device_supports(device, package.installer_type):
+        return CompatibilityResult(
+            False,
+            REASON_INSTALLER_UNSUPPORTED,
+            {"installer_type": package.installer_type},
         )
 
     return CompatibilityResult(True, REASON_COMPATIBLE)

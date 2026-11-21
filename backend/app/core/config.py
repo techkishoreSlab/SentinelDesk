@@ -105,10 +105,21 @@ class Settings(BaseSettings):
     device_stale_after_seconds: int = Field(default=900, ge=60, le=86_400)
     # Host path (or container mount) where admin-ingested .pkg files are staged for the agent.
     package_store_dir: str = Field(default="/Users/Shared/SentinelDesk/packages")
-    # Catalogue ingest uploads (pkg). Separate from general JSON API body limit when used.
-    catalogue_upload_max_bytes: int = Field(
-        default=200 * 1024 * 1024, ge=1_048_576, le=512 * 1024 * 1024
+    # Catalogue packages (pkg / dmg / zip), for uploads and URL downloads. Separate from the
+    # general JSON API body limit. Slack and Chrome DMGs are well over 200 MB.
+    catalogue_max_package_bytes: int = Field(
+        default=2 * 1024**3,
+        ge=1_048_576,
+        le=8 * 1024**3,
     )
+    # Pinned 7-Zip used by the sandboxed DMG inspector (installed by the backend Dockerfile).
+    seven_zip_path: str = Field(default="/usr/local/bin/7zz", max_length=300)
+    catalogue_inspect_timeout_seconds: int = Field(default=300, ge=30, le=1800)
+    catalogue_draft_ttl_seconds: int = Field(default=3600, ge=300, le=86_400)
+
+    @property
+    def catalogue_upload_max_bytes(self) -> int:
+        return self.catalogue_max_package_bytes
 
     @field_validator(*_OPTIONAL_FIELDS, mode="before")
     @classmethod

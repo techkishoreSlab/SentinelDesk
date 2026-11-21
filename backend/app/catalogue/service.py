@@ -8,7 +8,11 @@ from collections.abc import Sequence
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.catalogue.compatibility import PackageSnapshot, mandatory_fields_complete
+from app.catalogue.compatibility import (
+    ARCHIVE_KINDS,
+    PackageSnapshot,
+    mandatory_fields_complete,
+)
 from app.catalogue.models import CatalogueSoftware, CatalogueVersion, SoftwareAlias
 from app.catalogue.normalize import normalize_alias, slug_candidate
 from app.catalogue.schemas import (
@@ -44,6 +48,8 @@ def version_out(software: CatalogueSoftware, version: CatalogueVersion) -> Versi
         signature_required=version.signature_required,
         package_size_bytes=version.package_size_bytes,
         release_status=version.release_status,
+        expected_team_id=version.expected_team_id,
+        payload_path=version.payload_path,
         metadata_complete=mandatory_fields_complete(snap),
         created_at=version.created_at,
     )
@@ -67,6 +73,8 @@ def package_snapshot(software: CatalogueSoftware, version: CatalogueVersion) -> 
         verification_method=version.verification_method,
         package_identifier=version.package_identifier,
         version=version.version,
+        expected_team_id=version.expected_team_id,
+        payload_path=version.payload_path,
     )
 
 
@@ -265,34 +273,15 @@ async def create_version(db: AsyncSession, body: CreateVersion) -> CatalogueVers
     )
     if clash is not None:
         raise AppError("CONFLICT", 409, {"field": "version"})
-    if body.release_status == LifecycleStatus.ACTIVE:
-        # Build a temporary snapshot to validate completeness before insert.
-        probe = CatalogueVersion(
-            software_id=software.id,
-            version=body.version,
-            os_family=body.os_family.value,
-            architecture=body.architecture.value,
-            minimum_os_version=body.minimum_os_version,
-            minimum_memory_bytes=body.minimum_memory_bytes,
-            minimum_disk_bytes=body.minimum_disk_bytes,
-            installer_type=body.installer_type.value,
-            source_type=body.source_type.value,
-            source_reference=body.source_reference,
-            package_identifier=body.package_identifier,
-            verification_method=body.verification_method.value
-            if body.verification_method
-            else None,
-            sha256=body.sha256,
-            signature_publisher=body.signature_publisher,
-            signature_required=body.signature_required,
-            package_size_bytes=body.package_size_bytes,
-            release_status=body.release_status.value,
-        )
-        if (
-            software.lifecycle_status != LifecycleStatus.ACTIVE.value
-            or not mandatory_fields_complete(package_snapshot(software, probe))
-        ):
-            raise AppError("PACKAGE_METADATA_INCOMPLETE", 409)
+    is_archive = body.installer_type.value in ARCHIVE_KINDS
+    if is_archive and (not body.expected_team_id or not body.payload_path):
+        raise AppError("VALIDATION_ERROR", 422, {"field": "expected_team_id"})
+    if not is_archive and (body.expected_team_id or body.payload_path):
+        raise AppError("VALIDATION_ERROR", 422, {"field": "payload_path"})
+    if body.payload_path:
+        want = ".pkg" if body.installer_type.value == "MACOS_DMG_PKG" else ".app"
+        if not body.payload_path.endswith(want):
+            raise AppError("VALIDATION_ERROR", 422, {"field": "payload_path"})
 
     version = CatalogueVersion(
         software_id=software.id,
@@ -312,7 +301,14 @@ async def create_version(db: AsyncSession, body: CreateVersion) -> CatalogueVers
         signature_required=body.signature_required,
         package_size_bytes=body.package_size_bytes,
         release_status=body.release_status.value,
+        expected_team_id=body.expected_team_id,
+        payload_path=body.payload_path,
     )
+    if body.release_status == LifecycleStatus.ACTIVE and (
+        software.lifecycle_status != LifecycleStatus.ACTIVE.value
+        or not mandatory_fields_complete(package_snapshot(software, version))
+    ):
+        raise AppError("PACKAGE_METADATA_INCOMPLETE", 409)
     db.add(version)
     await db.flush()
     return version

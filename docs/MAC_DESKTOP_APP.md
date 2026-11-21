@@ -24,8 +24,9 @@ Shared client zips keep **Local demo stack** off (agent-only SaaS mode). Toggle 
 
 | Surface | Behavior |
 |---|---|
-| Menu bar | Shield icon + `Online` / `Installing…` / `Off` (one instance only) |
+| Menu bar | Shield icon + `Connecting…` / `Online` / `Installing…` / `Issue` / `Off` (one instance only) |
 | Popover | Status, device, control-plane line, console / prefs / restart / quit |
+| Launch UX | Open shows **Connecting…** (animated) while stack/agent warm up; **Issue** only for real failures with a clear cause — no false “Needs attention” flash |
 | Quit | Right‑click → **Quit Sentinel**, or popover Quit (⌘Q) |
 | Preferences | Connection URLs + optional Local demo stack |
 | Embedded agent | `sentinel-agent` inside the `.app` |
@@ -51,3 +52,23 @@ make macos-desktop
 3. First launch: System Settings → Privacy & Security → Open Anyway if blocked.
 4. Preferences → set Backend / Web URLs to your demo host (leave Local demo stack off unless they have the repo + Docker).
 5. Enroll the Mac; keep Sentinel open during installs.
+
+## Privileged install daemon (DMG / ZIP / pkg)
+
+The menu-bar agent downloads packages; a root LaunchDaemon performs the install.
+
+```bash
+# Preview only (no root changes):
+./scripts/install-privileged-launchdaemon.sh --print-plist
+
+# After explicit D2 approval:
+SENTINEL_APPROVE_LAUNCHDAEMON=I_APPROVE_D2 sudo -E ./scripts/install-privileged-launchdaemon.sh
+```
+
+The daemon reports which installer kinds it supports (`MACOS_PKG`, `MACOS_DMG_APP`, `MACOS_DMG_PKG`, `MACOS_ZIP_APP`). Older daemons or an unreachable socket keep today’s behaviour: **pkg only**. Staging lives at `/var/db/sentineldesk/staging` (root-only).
+
+Rebuild the desktop app after agent changes:
+
+```bash
+make macos-desktop-install
+```

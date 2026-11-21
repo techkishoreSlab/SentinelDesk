@@ -8,6 +8,8 @@ from typing import Any
 from sqlalchemy import CursorResult, and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.catalogue.store import purge_expired_drafts
+from app.core.config import get_settings
 from app.db.enums import JobStatus, RequestStatus
 from app.devices.models import EnrollmentToken
 from app.requests.models import InstallationJob, SoftwareRequest
@@ -67,6 +69,10 @@ async def purge_expired(db: AsyncSession, *, now: datetime | None = None) -> dic
 
     counts.update(await expire_abandoned_jobs(db, now=clock))
     await db.commit()
+    try:
+        counts["catalogue_drafts"] = purge_expired_drafts(get_settings(), now=clock.timestamp())
+    except OSError:
+        counts["catalogue_drafts"] = 0
     return counts
 
 
